@@ -379,4 +379,86 @@
   .my-view.my-active {
     display: block;
   }
+
+  /* Global Time Window Toolbar */
+  .my-time-window-bar {
+    background: var(--my-bg-card);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid var(--my-border);
+    border-radius: var(--my-radius-lg);
+    padding: 14px 20px;
+    margin-bottom: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 14px;
+    box-shadow: var(--my-shadow);
+  }
+
+  .my-time-window-inputs {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .my-window-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--my-text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .my-datetime-input {
+    background: var(--my-bg-surface);
+    border: 1px solid var(--my-border);
+    border-radius: var(--my-radius-sm);
+    color: var(--my-text-primary);
+    font-size: 13px;
+    font-family: inherit;
+    padding: 7px 10px;
+    color-scheme: dark;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  }
+
+  .my-datetime-input:focus {
+    outline: none;
+    border-color: var(--my-border-focus);
+    box-shadow: 0 0 0 2px var(--my-accent-glow);
+  }
+
+  .my-time-presets {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .my-pill-btn {
+    background: var(--my-bg-surface);
+    border: 1px solid var(--my-border);
+    color: var(--my-text-secondary);
+    font-size: 12px;
+    font-weight: 600;
+    padding: 6px 12px;
+    border-radius: 14px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+
+  .my-pill-btn:hover {
+    color: var(--my-text-primary);
+    background: var(--my-bg-card-hover);
+    border-color: var(--my-border-focus);
+  }
+
+  .my-pill-btn.my-active-preset {
+    color: #ffffff;
+    background: var(--my-accent);
+    border-color: var(--my-accent);
+  }
 </style>

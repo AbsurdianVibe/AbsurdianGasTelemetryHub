@@ -92,7 +92,7 @@
   }
 
   /**
-   * Render daily quota usage chart using Chart.js.
+   * Render daily quota usage stacked area chart using Chart.js.
    * @param {Array<Object>} myDailySeries - Daily quota points.
    */
   function myRenderDailyChart(myDailySeries) {
@@ -105,38 +105,104 @@
     }
 
     const myLabels = myDailySeries.map(function (d) { return d.dayKey; });
-    const myDataPoints = myDailySeries.map(function (d) { return d.triggerSec; });
+
+    const myProjectNames = [];
+    myDailySeries.forEach(function (myDay) {
+      if (!myDay.byProject) return;
+      Object.keys(myDay.byProject).forEach(function (myP) {
+        if (myProjectNames.indexOf(myP) === -1) {
+          myProjectNames.push(myP);
+        }
+      });
+    });
+
+    const myColorPalette = [
+      { fill: 'hsla(217, 91%, 60%, 0.45)', border: 'hsl(217, 91%, 60%)' },
+      { fill: 'hsla(142, 71%, 45%, 0.45)', border: 'hsl(142, 71%, 45%)' },
+      { fill: 'hsla(260, 80%, 65%, 0.45)', border: 'hsl(260, 80%, 65%)' },
+      { fill: 'hsla(38, 92%, 50%, 0.45)', border: 'hsl(38, 92%, 50%)' },
+      { fill: 'hsla(330, 80%, 60%, 0.45)', border: 'hsl(330, 80%, 60%)' },
+      { fill: 'hsla(180, 70%, 45%, 0.45)', border: 'hsl(180, 70%, 45%)' }
+    ];
+
+    const myDatasets = myProjectNames.map(function (myProjName, myIdx) {
+      const myColor = myColorPalette[myIdx % myColorPalette.length];
+      const myData = myDailySeries.map(function (myDay) {
+        return (myDay.byProject && myDay.byProject[myProjName]) ?
+          Number(myDay.byProject[myProjName].toFixed(1)) : 0;
+      });
+
+      return {
+        label: myProjName,
+        data: myData,
+        borderColor: myColor.border,
+        backgroundColor: myColor.fill,
+        fill: true,
+        tension: 0.3,
+        borderWidth: 2,
+        pointRadius: 2
+      };
+    });
+
+    if (myDatasets.length === 0) {
+      myDatasets.push({
+        label: 'Brak aktywności',
+        data: myDailySeries.map(function () { return 0; }),
+        borderColor: 'hsl(217, 91%, 60%)',
+        backgroundColor: 'hsla(217, 91%, 60%, 0.1)',
+        fill: true,
+        tension: 0.3,
+        borderWidth: 2,
+        pointRadius: 2
+      });
+    }
 
     myDailyQuotaChartInstance = new Chart(myCtx, {
       type: 'line',
       data: {
         labels: myLabels,
-        datasets: [{
-          label: 'Czas triggerów (s)',
-          data: myDataPoints,
-          borderColor: 'hsl(217, 91%, 60%)',
-          backgroundColor: 'hsla(217, 91%, 60%, 0.1)',
-          fill: true,
-          tension: 0.3,
-          borderWidth: 2,
-          pointRadius: 3
-        }]
+        datasets: myDatasets
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
+        interaction: {
+          mode: 'index',
+          intersect: false
+        },
         plugins: {
-          legend: { display: false }
+          legend: {
+            display: true,
+            position: 'top',
+            labels: { color: 'hsl(215, 20%, 65%)', font: { size: 11 }, boxWidth: 10 }
+          },
+          tooltip: {
+            callbacks: {
+              label: function (myCtxItem) {
+                return ' ' + myCtxItem.dataset.label + ': ' + myFormatDurationClient(myCtxItem.raw);
+              }
+            }
+          }
         },
         scales: {
           x: {
+            stacked: true,
             grid: { color: 'hsla(217, 33%, 30%, 0.2)' },
             ticks: { color: 'hsl(215, 20%, 65%)', font: { size: 11 } }
           },
           y: {
+            stacked: true,
             beginAtZero: true,
             grid: { color: 'hsla(217, 33%, 30%, 0.2)' },
-            ticks: { color: 'hsl(215, 20%, 65%)', font: { size: 11 } }
+            ticks: {
+              color: 'hsl(215, 20%, 65%)',
+              font: { size: 11 },
+              callback: function (myVal) {
+                const myM = Math.floor(myVal / 60);
+                const myS = Math.round(myVal % 60);
+                return myM + ':' + (myS < 10 ? '0' : '') + myS;
+              }
+            }
           }
         }
       }
@@ -228,17 +294,74 @@
     myTbody.innerHTML = myHtml;
   }
 
+  let myGlobalFromIso = '';
+  let myGlobalToIso = '';
+
+  /**
+   * Convert Date object to datetime-local input string YYYY-MM-DDTHH:mm.
+   * @param {Date} myDate - Date instance.
+   * @return {string} Datetime string.
+   */
+  function myToDatetimeInputValue(myDate) {
+    const myOffsetMs = myDate.getTimezoneOffset() * 60000;
+    return new Date(myDate.getTime() - myOffsetMs).toISOString().slice(0, 16);
+  }
+
+  /**
+   * Set time window inputs and refresh dashboard based on day preset.
+   * @param {number} myDaysCount - Lookback days count.
+   */
+  function mySetTimeWindowPreset(myDaysCount) {
+    const myNow = new Date();
+    const myStart = new Date();
+    myStart.setDate(myStart.getDate() - myDaysCount);
+
+    document.getElementById('myInputTimeFrom').value = myToDatetimeInputValue(myStart);
+    document.getElementById('myInputTimeTo').value = myToDatetimeInputValue(myNow);
+
+    document.querySelectorAll('.my-pill-btn').forEach(function (myBtn) {
+      myBtn.classList.remove('my-active-preset');
+    });
+
+    myApplyTimeWindow();
+  }
+
+  /**
+   * Read time window inputs and apply global filter.
+   */
+  function myApplyTimeWindow() {
+    const myFromVal = document.getElementById('myInputTimeFrom').value;
+    const myToVal = document.getElementById('myInputTimeTo').value;
+
+    myGlobalFromIso = myFromVal ? new Date(myFromVal).toISOString() : '';
+    myGlobalToIso = myToVal ? new Date(myToVal).toISOString() : '';
+
+    myLoadDashboard(myGlobalFromIso, myGlobalToIso);
+  }
+
   /**
    * Load dashboard data from backend and populate UI.
-   * @param {number} myDaysRange - Days range to fetch.
+   * @param {string} myFromIso - Start ISO timestamp.
+   * @param {string} myToIso - End ISO timestamp.
    */
-  async function myLoadDashboard(myDaysRange) {
+  async function myLoadDashboard(myFromIso, myToIso) {
     try {
-      const myRes = await myCallServer('myApiGetDashboardData', myDaysRange);
+      const myRes = await myCallServer('myApiGetDashboardData', myFromIso, myToIso);
       myRenderKpis(myRes.dashboard.summary);
       myRenderDailyChart(myRes.dashboard.dailySeries);
       myRenderProjectsShareChart(myRes.dashboard.projects);
       myRenderProjectsTable(myRes.dashboard.projects);
+
+      if (myRes.timeWindow) {
+        myGlobalFromIso = myRes.timeWindow.fromIso;
+        myGlobalToIso = myRes.timeWindow.toIso;
+        if (!document.getElementById('myInputTimeFrom').value) {
+          document.getElementById('myInputTimeFrom').value = myToDatetimeInputValue(new Date(myGlobalFromIso));
+        }
+        if (!document.getElementById('myInputTimeTo').value) {
+          document.getElementById('myInputTimeTo').value = myToDatetimeInputValue(new Date(myGlobalToIso));
+        }
+      }
 
       if (myRes.settings) {
         document.getElementById('myInputRetention').value = myRes.settings.retentionDays;
@@ -267,7 +390,7 @@
     mySpinnerText.innerText = 'Pobieranie procesów...';
 
     try {
-      const myRes = await myCallServer('myApiTriggerManualSync');
+      const myRes = await myCallServer('myApiTriggerManualSync', myGlobalFromIso, myGlobalToIso);
       myRenderKpis(myRes.dashboard.summary);
       myRenderDailyChart(myRes.dashboard.dailySeries);
       myRenderProjectsShareChart(myRes.dashboard.projects);
@@ -301,7 +424,7 @@
         quotaLimitSec: myQuota
       });
       alert('Ustawienia zapisane pomyślnie.');
-      myLoadDashboard(myRetention);
+      myLoadDashboard(myGlobalFromIso, myGlobalToIso);
     } catch (myErr) {
       alert('Błąd zapisu ustawień: ' + myErr.message);
     } finally {
@@ -312,6 +435,6 @@
 
   // Initial load
   document.addEventListener('DOMContentLoaded', function () {
-    myLoadDashboard(30);
+    myLoadDashboard('', '');
   });
 </script>

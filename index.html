@@ -36,6 +36,29 @@
       <button class="my-nav-btn" id="myNavTabSettings" onclick="mySwitchView('settings')">Ustawienia</button>
     </nav>
 
+    <!-- Global Time Window Toolbar -->
+    <aside class="my-time-window-bar" aria-label="Globalne sterowanie oknem czasowym">
+      <div class="my-time-window-inputs">
+        <span class="my-window-label">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          Okno od:
+        </span>
+        <input type="datetime-local" id="myInputTimeFrom" class="my-datetime-input" aria-label="Początek okna czasowego">
+        <span class="my-window-label">do:</span>
+        <input type="datetime-local" id="myInputTimeTo" class="my-datetime-input" aria-label="Koniec okna czasowego">
+        <button id="myBtnApplyTimeWindow" class="my-btn" style="padding: 7px 14px; font-size: 13px;" onclick="myApplyTimeWindow()">
+          Filtruj
+        </button>
+      </div>
+      <div class="my-time-presets">
+        <span class="my-kpi-sub" style="margin-right: 4px;">Szybki wybór:</span>
+        <button type="button" class="my-pill-btn" onclick="mySetTimeWindowPreset(1)">24h</button>
+        <button type="button" class="my-pill-btn" onclick="mySetTimeWindowPreset(7)">7 dni</button>
+        <button type="button" class="my-pill-btn my-active-preset" id="myPresetBtn30d" onclick="mySetTimeWindowPreset(30)">30 dni</button>
+        <button type="button" class="my-pill-btn" onclick="mySetTimeWindowPreset(180)">Wszystko</button>
+      </div>
+    </aside>
+
     <!-- View: Overview -->
     <main id="myViewOverview" class="my-view my-active">
       <!-- KPI Row -->
@@ -80,7 +103,7 @@
       <!-- Charts Section -->
       <section class="my-section-grid">
         <div class="my-card">
-          <h2 class="my-section-title">Dobowy trend zużycia kwoty wyzwalaczy (sekundy)</h2>
+          <h2 class="my-section-title">Dobowy miks zużycia kwoty wyzwalaczy per projekt (minuty:sekundy)</h2>
           <div class="my-chart-wrapper">
             <canvas id="myChartDailyQuota"></canvas>
           </div>

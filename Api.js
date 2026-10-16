@@ -14,32 +14,44 @@ function myAssertOwner_() {
 }
 
 /**
- * Get aggregated dashboard data.
- * @param {number} myDaysRange - Lookback days range.
+ * Get aggregated dashboard data for global time window.
+ * @param {string} myFromIso - Start ISO timestamp.
+ * @param {string} myToIso - End ISO timestamp.
  * @return {Object} Dashboard payload.
  */
-function myApiGetDashboardData(myDaysRange) {
+function myApiGetDashboardData(myFromIso, myToIso) {
   myAssertOwner_();
-  const myRange = Math.max(1, Math.min(180, Number(myDaysRange) || MY_DEFAULT_RETENTION_DAYS));
   const mySettings = myGetSettings();
-  const myFromIso = myGetDateNDaysAgo(myRange);
-  const myRows = myReadProcessesRange(myFromIso, '');
+  let myStart = myParseTimestampIso(myFromIso);
+  let myEnd = myParseTimestampIso(myToIso);
+
+  if (!myStart) {
+    myStart = myGetDateNDaysAgo(mySettings.retentionDays || MY_DEFAULT_RETENTION_DAYS);
+  }
+
+  const myRows = myReadProcessesRange(myStart, myEnd);
   const myAggregated = myAggregateDataset(myRows, mySettings.quotaLimitSec, MY_DEFAULT_TIMEZONE);
   return {
     dashboard: myAggregated,
     settings: mySettings,
-    lastSync: myGetCursor()
+    lastSync: myGetCursor(),
+    timeWindow: {
+      fromIso: myStart,
+      toIso: myEnd || new Date().toISOString()
+    }
   };
 }
 
 /**
  * Trigger manual telemetry synchronization.
+ * @param {string} myFromIso - Start ISO timestamp.
+ * @param {string} myToIso - End ISO timestamp.
  * @return {Object} Updated dashboard data.
  */
-function myApiTriggerManualSync() {
+function myApiTriggerManualSync(myFromIso, myToIso) {
   myAssertOwner_();
   myRunCollector();
-  return myApiGetDashboardData(MY_DEFAULT_RETENTION_DAYS);
+  return myApiGetDashboardData(myFromIso, myToIso);
 }
 
 /**

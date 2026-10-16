@@ -71,13 +71,15 @@ function myAggregateDataset(myRows, myQuotaLimitSec, myTz) {
     // 1. Quota accumulation per day
     const myDayKey = myGetDayKey(myRow.startTime, myTz);
     if (!myDailyQuota[myDayKey]) {
-      myDailyQuota[myDayKey] = { dayKey: myDayKey, triggerSec: 0, totalSec: 0, count: 0 };
+      myDailyQuota[myDayKey] = { dayKey: myDayKey, triggerSec: 0, totalSec: 0, count: 0, byProject: {} };
     }
     myDailyQuota[myDayKey].totalSec += myRow.durationSec;
     const myIsQuotaType = myRow.processType === MY_PROCESS_TYPE.TIME_DRIVEN ||
       myRow.processType === MY_PROCESS_TYPE.TRIGGER;
     if (myIsQuotaType) {
       myDailyQuota[myDayKey].triggerSec += myRow.durationSec;
+      myDailyQuota[myDayKey].byProject[myRow.projectName] =
+        (myDailyQuota[myDayKey].byProject[myRow.projectName] || 0) + myRow.durationSec;
     }
 
     // 2. Project & function breakdown
@@ -133,7 +135,8 @@ function myAggregateDataset(myRows, myQuotaLimitSec, myTz) {
       triggerSec: Number(myItem.triggerSec.toFixed(1)),
       totalSec: Number(myItem.totalSec.toFixed(1)),
       count: myItem.count,
-      percentUsed: Number(((myItem.triggerSec / myQuotaLimitSec) * 100).toFixed(1))
+      percentUsed: Number(((myItem.triggerSec / myQuotaLimitSec) * 100).toFixed(1)),
+      byProject: myItem.byProject
     };
   });
 
