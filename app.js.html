@@ -1,0 +1,317 @@
+<script>
+  /**
+   * Client-side application controller for Absurdian Gas Telemetry Hub.
+   */
+
+  let myDailyQuotaChartInstance = null;
+  let myProjectsShareChartInstance = null;
+  let myActiveViewName = 'overview';
+
+  /**
+   * Promise wrapper for google.script.run server calls.
+   * @param {string} myMethodName - Remote function name.
+   * @param {...*} myArgs - Arguments to pass.
+   * @return {Promise<*>} Server response promise.
+   */
+  function myCallServer(myMethodName, ...myArgs) {
+    return new Promise(function (myResolve, myReject) {
+      if (typeof google === 'undefined' || !google.script || !google.script.run) {
+        myReject(new Error('google.script.run is not available in local mode.'));
+        return;
+      }
+      const myRunner = google.script.run
+        .withSuccessHandler(myResolve)
+        .withFailureHandler(myReject);
+      myRunner[myMethodName].apply(myRunner, myArgs);
+    });
+  }
+
+  /**
+   * Switch active navigation tab and section.
+   * @param {string} myTabKey - Target tab key.
+   */
+  function mySwitchView(myTabKey) {
+    myActiveViewName = myTabKey;
+    ['overview', 'projects', 'settings'].forEach(function (myKey) {
+      const myNavBtn = document.getElementById('myNavTab' + myKey.charAt(0).toUpperCase() + myKey.slice(1));
+      const myViewSec = document.getElementById('myView' + myKey.charAt(0).toUpperCase() + myKey.slice(1));
+      if (myKey === myTabKey) {
+        if (myNavBtn) myNavBtn.classList.add('my-active');
+        if (myViewSec) myViewSec.classList.add('my-active');
+      } else {
+        if (myNavBtn) myNavBtn.classList.remove('my-active');
+        if (myViewSec) myViewSec.classList.remove('my-active');
+      }
+    });
+  }
+
+  /**
+   * Format duration in seconds to human readable string.
+   * @param {number} mySec - Duration in seconds.
+   * @return {string} Formatted duration.
+   */
+  function myFormatDurationClient(mySec) {
+    if (!mySec || isNaN(mySec)) return '0.0s';
+    if (mySec < 60) return mySec.toFixed(1) + 's';
+    const myMins = Math.floor(mySec / 60);
+    const myRemainder = (mySec % 60).toFixed(0);
+    if (myMins < 60) return myMins + 'm ' + myRemainder + 's';
+    return Math.floor(myMins / 60) + 'h ' + (myMins % 60) + 'm';
+  }
+
+  /**
+   * Render KPI summary cards and progress bars.
+   * @param {Object} mySummary - Summary metrics object.
+   */
+  function myRenderKpis(mySummary) {
+    const myQuotaPct = mySummary.todayQuotaPercent || 0;
+    const myQuotaBadge = document.getElementById('myKpiQuotaBadge');
+    const myQuotaVal = document.getElementById('myKpiQuotaVal');
+    const myQuotaBar = document.getElementById('myKpiQuotaBar');
+
+    myQuotaVal.innerText = mySummary.todayQuotaSec + 's (' + myQuotaPct + '%)';
+    myQuotaBadge.innerText = myQuotaPct + '%';
+    myQuotaBar.style.width = Math.min(100, myQuotaPct) + '%';
+
+    myQuotaBar.className = 'my-progress-fill';
+    myQuotaBadge.className = 'my-badge';
+    if (myQuotaPct >= 90) {
+      myQuotaBar.classList.add('my-crit');
+      myQuotaBadge.classList.add('my-badge-danger');
+    } else if (myQuotaPct >= 70) {
+      myQuotaBar.classList.add('my-warn');
+      myQuotaBadge.classList.add('my-badge-danger');
+    } else {
+      myQuotaBadge.classList.add('my-badge-success');
+    }
+
+    document.getElementById('myKpiTotalDurationVal').innerText = myFormatDurationClient(mySummary.totalDurationSec);
+    document.getElementById('myKpiTotalRunsVal').innerText = mySummary.totalRuns.toLocaleString();
+    document.getElementById('myKpiFailureRateVal').innerText = mySummary.failureRate + '%';
+    document.getElementById('myKpiFailureRateSub').innerText = mySummary.totalFailures + ' awarii / timeoutów';
+  }
+
+  /**
+   * Render daily quota usage chart using Chart.js.
+   * @param {Array<Object>} myDailySeries - Daily quota points.
+   */
+  function myRenderDailyChart(myDailySeries) {
+    const myCanvas = document.getElementById('myChartDailyQuota');
+    if (!myCanvas) return;
+    const myCtx = myCanvas.getContext('2d');
+
+    if (myDailyQuotaChartInstance) {
+      myDailyQuotaChartInstance.destroy();
+    }
+
+    const myLabels = myDailySeries.map(function (d) { return d.dayKey; });
+    const myDataPoints = myDailySeries.map(function (d) { return d.triggerSec; });
+
+    myDailyQuotaChartInstance = new Chart(myCtx, {
+      type: 'line',
+      data: {
+        labels: myLabels,
+        datasets: [{
+          label: 'Czas triggerów (s)',
+          data: myDataPoints,
+          borderColor: 'hsl(217, 91%, 60%)',
+          backgroundColor: 'hsla(217, 91%, 60%, 0.1)',
+          fill: true,
+          tension: 0.3,
+          borderWidth: 2,
+          pointRadius: 3
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false }
+        },
+        scales: {
+          x: {
+            grid: { color: 'hsla(217, 33%, 30%, 0.2)' },
+            ticks: { color: 'hsl(215, 20%, 65%)', font: { size: 11 } }
+          },
+          y: {
+            beginAtZero: true,
+            grid: { color: 'hsla(217, 33%, 30%, 0.2)' },
+            ticks: { color: 'hsl(215, 20%, 65%)', font: { size: 11 } }
+          }
+        }
+      }
+    });
+  }
+
+  /**
+   * Render projects duration share doughnut chart.
+   * @param {Array<Object>} myProjects - Projects breakdown.
+   */
+  function myRenderProjectsShareChart(myProjects) {
+    const myCanvas = document.getElementById('myChartProjectsShare');
+    if (!myCanvas) return;
+    const myCtx = myCanvas.getContext('2d');
+
+    if (myProjectsShareChartInstance) {
+      myProjectsShareChartInstance.destroy();
+    }
+
+    const myLabels = myProjects.map(function (p) { return p.projectName; });
+    const myDataPoints = myProjects.map(function (p) { return p.totalSec; });
+    const myColors = [
+      'hsl(217, 91%, 60%)',
+      'hsl(142, 71%, 45%)',
+      'hsl(38, 92%, 50%)',
+      'hsl(260, 80%, 65%)',
+      'hsl(330, 80%, 60%)',
+      'hsl(180, 70%, 45%)'
+    ];
+
+    myProjectsShareChartInstance = new Chart(myCtx, {
+      type: 'doughnut',
+      data: {
+        labels: myLabels,
+        datasets: [{
+          data: myDataPoints,
+          backgroundColor: myColors.slice(0, myLabels.length),
+          borderWidth: 0
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: {
+            position: 'bottom',
+            labels: { color: 'hsl(215, 20%, 65%)', font: { size: 11 }, boxWidth: 12 }
+          }
+        }
+      }
+    });
+  }
+
+  /**
+   * Render projects and functions breakdown table rows.
+   * @param {Array<Object>} myProjects - Projects list.
+   */
+  function myRenderProjectsTable(myProjects) {
+    const myTbody = document.getElementById('myTableProjectsBody');
+    if (!myTbody) return;
+
+    if (!myProjects || myProjects.length === 0) {
+      myTbody.innerHTML = '<tr><td colspan="9" style="text-align: center; color: var(--my-text-secondary);">Brak zarejestrowanych procesów w wybranym oknie.</td></tr>';
+      return;
+    }
+
+    let myHtml = '';
+    myProjects.forEach(function (myProj) {
+      myProj.functions.forEach(function (myFn) {
+        const myStatusPills = Object.keys(myFn.statuses).map(function (mySt) {
+          const myBadgeClass = (mySt === 'FAILED' || mySt === 'TIMED_OUT') ? 'my-badge-danger' : 'my-badge-success';
+          return '<span class="my-badge ' + myBadgeClass + '">' + mySt + ': ' + myFn.statuses[mySt] + '</span>';
+        }).join(' ');
+
+        myHtml += '<tr>' +
+          '<td><strong>' + myProj.projectName + '</strong></td>' +
+          '<td><code>' + myFn.functionName + '</code></td>' +
+          '<td>' + myFn.count + '</td>' +
+          '<td>' + myFormatDurationClient(myFn.totalSec) + '</td>' +
+          '<td>' + myFn.avgSec + 's</td>' +
+          '<td>' + myFn.minSec + 's</td>' +
+          '<td>' + myFn.maxSec + 's</td>' +
+          '<td>' + myFn.p95Sec + 's</td>' +
+          '<td>' + myStatusPills + '</td>' +
+          '</tr>';
+      });
+    });
+
+    myTbody.innerHTML = myHtml;
+  }
+
+  /**
+   * Load dashboard data from backend and populate UI.
+   * @param {number} myDaysRange - Days range to fetch.
+   */
+  async function myLoadDashboard(myDaysRange) {
+    try {
+      const myRes = await myCallServer('myApiGetDashboardData', myDaysRange);
+      myRenderKpis(myRes.dashboard.summary);
+      myRenderDailyChart(myRes.dashboard.dailySeries);
+      myRenderProjectsShareChart(myRes.dashboard.projects);
+      myRenderProjectsTable(myRes.dashboard.projects);
+
+      if (myRes.settings) {
+        document.getElementById('myInputRetention').value = myRes.settings.retentionDays;
+        document.getElementById('myRetentionDisplay').innerText = myRes.settings.retentionDays;
+        document.getElementById('myInputQuota').value = myRes.settings.quotaLimitSec;
+      }
+
+      if (myRes.lastSync) {
+        document.getElementById('myStatusSubtitle').innerText = 'Ostatnia synchronizacja: ' + new Date(myRes.lastSync).toLocaleString('pl-PL');
+      }
+    } catch (myErr) {
+      console.error('Error loading dashboard:', myErr);
+      document.getElementById('myStatusSubtitle').innerText = 'Błąd odczytu danych: ' + myErr.message;
+    }
+  }
+
+  /**
+   * Trigger manual telemetry collection and refresh views.
+   */
+  async function myHandleManualSync() {
+    const myBtn = document.getElementById('myBtnSyncNow');
+    const mySpinnerText = document.getElementById('mySyncBtnText');
+
+    myBtn.disabled = true;
+    myBtn.classList.add('my-loading');
+    mySpinnerText.innerText = 'Pobieranie procesów...';
+
+    try {
+      const myRes = await myCallServer('myApiTriggerManualSync');
+      myRenderKpis(myRes.dashboard.summary);
+      myRenderDailyChart(myRes.dashboard.dailySeries);
+      myRenderProjectsShareChart(myRes.dashboard.projects);
+      myRenderProjectsTable(myRes.dashboard.projects);
+      if (myRes.lastSync) {
+        document.getElementById('myStatusSubtitle').innerText = 'Ostatnia synchronizacja: ' + new Date(myRes.lastSync).toLocaleString('pl-PL');
+      }
+    } catch (myErr) {
+      alert('Błąd synchronizacji: ' + myErr.message);
+    } finally {
+      myBtn.disabled = false;
+      myBtn.classList.remove('my-loading');
+      mySpinnerText.innerText = 'Synchronizuj teraz';
+    }
+  }
+
+  /**
+   * Save configuration settings to backend.
+   */
+  async function myHandleSaveSettings() {
+    const myRetention = Number(document.getElementById('myInputRetention').value);
+    const myQuota = Number(document.getElementById('myInputQuota').value);
+    const mySaveBtn = document.getElementById('myBtnSaveSettings');
+
+    mySaveBtn.disabled = true;
+    mySaveBtn.innerText = 'Zapisywanie...';
+
+    try {
+      await myCallServer('myApiUpdateSettings', {
+        retentionDays: myRetention,
+        quotaLimitSec: myQuota
+      });
+      alert('Ustawienia zapisane pomyślnie.');
+      myLoadDashboard(myRetention);
+    } catch (myErr) {
+      alert('Błąd zapisu ustawień: ' + myErr.message);
+    } finally {
+      mySaveBtn.disabled = false;
+      mySaveBtn.innerText = 'Zapisz ustawienia';
+    }
+  }
+
+  // Initial load
+  document.addEventListener('DOMContentLoaded', function () {
+    myLoadDashboard(30);
+  });
+</script>

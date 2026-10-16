@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8">
+  <title>Absurdian Gas Telemetry Hub</title>
+  <meta name="description" content="Centralized execution telemetry and trigger quota monitoring dashboard for Google Apps Script.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <?!= myInclude('styles'); ?>
+</head>
+<body>
+  <div class="my-container">
+    <!-- Main Header -->
+    <header class="my-header">
+      <div class="my-brand">
+        <div class="my-brand-icon">Δ</div>
+        <div>
+          <h1 class="my-title">AbsurdianGasTelemetryHub</h1>
+          <p class="my-subtitle" id="myStatusSubtitle">Centralny audyt telemetryczny GAS</p>
+        </div>
+      </div>
+      <div class="my-actions">
+        <button id="myBtnSyncNow" class="my-btn" onclick="myHandleManualSync()">
+          <span class="my-spinner" id="mySyncSpinner"></span>
+          <span id="mySyncBtnText">Synchronizuj teraz</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Navigation Tabs -->
+    <nav class="my-nav" aria-label="Główna nawigacja">
+      <button class="my-nav-btn my-active" id="myNavTabOverview" onclick="mySwitchView('overview')">Przegląd</button>
+      <button class="my-nav-btn" id="myNavTabProjects" onclick="mySwitchView('projects')">Projekty & Funkcje</button>
+      <button class="my-nav-btn" id="myNavTabSettings" onclick="mySwitchView('settings')">Ustawienia</button>
+    </nav>
+
+    <!-- View: Overview -->
+    <main id="myViewOverview" class="my-view my-active">
+      <!-- KPI Row -->
+      <section class="my-kpi-grid">
+        <div class="my-card">
+          <div class="my-kpi-header">
+            <span class="my-kpi-label">Dzisiejsza Kwota Triggerów</span>
+            <span id="myKpiQuotaBadge" class="my-badge my-badge-success">0%</span>
+          </div>
+          <div class="my-kpi-value" id="myKpiQuotaVal">0.0s / 90m</div>
+          <div class="my-progress-bar">
+            <div class="my-progress-fill" id="myKpiQuotaBar" style="width: 0%;"></div>
+          </div>
+          <div class="my-kpi-sub" id="myKpiQuotaSub">Limit Consumer: 5400s (90 min)</div>
+        </div>
+
+        <div class="my-card">
+          <div class="my-kpi-header">
+            <span class="my-kpi-label">Łączny Czas Wykonań</span>
+          </div>
+          <div class="my-kpi-value" id="myKpiTotalDurationVal">0.0s</div>
+          <div class="my-kpi-sub" id="myKpiTotalDurationSub">Okres retencji</div>
+        </div>
+
+        <div class="my-card">
+          <div class="my-kpi-header">
+            <span class="my-kpi-label">Liczba Procesów</span>
+          </div>
+          <div class="my-kpi-value" id="myKpiTotalRunsVal">0</div>
+          <div class="my-kpi-sub" id="myKpiTotalRunsSub">Wszystkie projekty</div>
+        </div>
+
+        <div class="my-card">
+          <div class="my-kpi-header">
+            <span class="my-kpi-label">Wskaźnik Awaryjności</span>
+          </div>
+          <div class="my-kpi-value" id="myKpiFailureRateVal">0.0%</div>
+          <div class="my-kpi-sub" id="myKpiFailureRateSub">0 błędów / timeoutów</div>
+        </div>
+      </section>
+
+      <!-- Charts Section -->
+      <section class="my-section-grid">
+        <div class="my-card">
+          <h2 class="my-section-title">Dobowy trend zużycia kwoty wyzwalaczy (sekundy)</h2>
+          <div class="my-chart-wrapper">
+            <canvas id="myChartDailyQuota"></canvas>
+          </div>
+        </div>
+        <div class="my-card">
+          <h2 class="my-section-title">Udział projektów w czasie wykonania</h2>
+          <div class="my-chart-wrapper">
+            <canvas id="myChartProjectsShare"></canvas>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- View: Projects & Functions -->
+    <section id="myViewProjects" class="my-view">
+      <div class="my-card">
+        <h2 class="my-section-title">Wykaz projektów i funkcji (Cross-Project Breakdown)</h2>
+        <div class="my-table-responsive">
+          <table class="my-table" id="myTableProjects">
+            <thead>
+              <tr>
+                <th>Projekt</th>
+                <th>Funkcja</th>
+                <th>Wywołania</th>
+                <th>Czas łączny</th>
+                <th>Średni</th>
+                <th>Min</th>
+                <th>Max</th>
+                <th>P95</th>
+                <th>Statusy</th>
+              </tr>
+            </thead>
+            <tbody id="myTableProjectsBody">
+              <tr>
+                <td colspan="9" style="text-align: center; color: var(--my-text-secondary);">Ładowanie danych...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- View: Settings -->
+    <section id="myViewSettings" class="my-view">
+      <div class="my-card" style="max-width: 600px;">
+        <h2 class="my-section-title">Konfiguracja Hub</h2>
+        
+        <div class="my-form-group">
+          <label class="my-label" for="myInputRetention">Okno Retencji Danych (Dni): <span id="myRetentionDisplay">30</span></label>
+          <input type="range" class="my-range" id="myInputRetention" min="7" max="180" value="30" oninput="document.getElementById('myRetentionDisplay').innerText = this.value">
+          <p class="my-kpi-sub" style="margin-top: 6px;">Określa liczbę dni przechowywania procesów w arkuszu (7–180 dni).</p>
+        </div>
+
+        <div class="my-form-group">
+          <label class="my-label" for="myInputQuota">Limit dobowy kwoty wyzwalaczy (Sekundy)</label>
+          <input type="number" class="my-input" id="myInputQuota" value="5400">
+          <p class="my-kpi-sub" style="margin-top: 6px;">Konto Consumer: 5400s (90 min) | Konto Workspace: 21600s (6h).</p>
+        </div>
+
+        <div style="display: flex; gap: 12px; margin-top: 24px;">
+          <button id="myBtnSaveSettings" class="my-btn" onclick="myHandleSaveSettings()">Zapisz ustawienia</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <?!= myInclude('app.js'); ?>
+</body>
+</html>
