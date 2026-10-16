@@ -52,15 +52,47 @@ function myInitFunctionSummary_(myFunctionName) {
  * @param {Array<IProcessRow>} myRows - Raw process rows.
  * @param {number} myQuotaLimitSec - Quota limit in seconds.
  * @param {string} myTz - Timezone.
+ * @param {string} [myFromIso] - Start ISO timestamp.
+ * @param {string} [myToIso] - End ISO timestamp.
+ * @param {string} [myRequestedResolution] - Target resolution (auto, 1d, 1h, 30m, 15m, 5m, 1m).
  * @return {Object} Aggregated dashboard DTO.
  */
-function myAggregateDataset(myRows, myQuotaLimitSec, myTz) {
+function myAggregateDataset(myRows, myQuotaLimitSec, myTz, myFromIso, myToIso, myRequestedResolution) {
   const myProjects = {};
-  const myDailyQuota = {};
+  const mySeriesBuckets = {};
   let myTotalDurationSec = 0;
   let myTotalFailures = 0;
+  let myTodayTriggerSec = 0;
 
-  const myTodayKey = myGetDayKey(new Date(), myTz);
+  const myTimezone = myTz || MY_DEFAULT_TIMEZONE;
+  const myTodayKey = myGetDayKey(new Date(), myTimezone);
+
+  let myEffectiveResolution = myRequestedResolution;
+  if (!myEffectiveResolution || myEffectiveResolution === 'auto') {
+    myEffectiveResolution = myResolveAutoResolution(myFromIso, myToIso);
+  }
+
+  // Pre-fill continuous buckets if range is within safe visual limit (up to 1000 points)
+  if (myFromIso && myToIso) {
+    const myStartMs = new Date(myFromIso).getTime();
+    const myEndMs = new Date(myToIso).getTime();
+    const myStepMs = myGetBucketStepMs(myEffectiveResolution);
+    const myStepsCount = Math.floor((myEndMs - myStartMs) / myStepMs);
+    if (myStepsCount > 0 && myStepsCount <= 1000) {
+      for (let myCurrMs = myStartMs; myCurrMs <= myEndMs; myCurrMs += myStepMs) {
+        const myFillKey = myGetBucketKey(new Date(myCurrMs), myEffectiveResolution, myTimezone);
+        if (myFillKey && !mySeriesBuckets[myFillKey]) {
+          mySeriesBuckets[myFillKey] = {
+            bucketKey: myFillKey,
+            triggerSec: 0,
+            totalSec: 0,
+            count: 0,
+            byProject: {}
+          };
+        }
+      }
+    }
+  }
 
   myRows.forEach(function (myRow) {
     myTotalDurationSec += myRow.durationSec;
@@ -68,18 +100,34 @@ function myAggregateDataset(myRows, myQuotaLimitSec, myTz) {
       myRow.processStatus === MY_PROCESS_STATUS.TIMED_OUT;
     if (myIsFail) myTotalFailures++;
 
-    // 1. Quota accumulation per day
-    const myDayKey = myGetDayKey(myRow.startTime, myTz);
-    if (!myDailyQuota[myDayKey]) {
-      myDailyQuota[myDayKey] = { dayKey: myDayKey, triggerSec: 0, totalSec: 0, count: 0, byProject: {} };
-    }
-    myDailyQuota[myDayKey].totalSec += myRow.durationSec;
     const myIsQuotaType = myRow.processType === MY_PROCESS_TYPE.TIME_DRIVEN ||
       myRow.processType === MY_PROCESS_TYPE.TRIGGER;
-    if (myIsQuotaType) {
-      myDailyQuota[myDayKey].triggerSec += myRow.durationSec;
-      myDailyQuota[myDayKey].byProject[myRow.projectName] =
-        (myDailyQuota[myDayKey].byProject[myRow.projectName] || 0) + myRow.durationSec;
+
+    // Track today's quota independently of chart range
+    const myRowDay = myGetDayKey(myRow.startTime, myTimezone);
+    if (myRowDay === myTodayKey && myIsQuotaType) {
+      myTodayTriggerSec += myRow.durationSec;
+    }
+
+    // 1. Time-series bucket accumulation
+    const myBucketKey = myGetBucketKey(myRow.startTime, myEffectiveResolution, myTimezone);
+    if (myBucketKey) {
+      if (!mySeriesBuckets[myBucketKey]) {
+        mySeriesBuckets[myBucketKey] = {
+          bucketKey: myBucketKey,
+          triggerSec: 0,
+          totalSec: 0,
+          count: 0,
+          byProject: {}
+        };
+      }
+      mySeriesBuckets[myBucketKey].totalSec += myRow.durationSec;
+      mySeriesBuckets[myBucketKey].count++;
+      if (myIsQuotaType) {
+        mySeriesBuckets[myBucketKey].triggerSec += myRow.durationSec;
+        mySeriesBuckets[myBucketKey].byProject[myRow.projectName] =
+          (mySeriesBuckets[myBucketKey].byProject[myRow.projectName] || 0) + myRow.durationSec;
+      }
     }
 
     // 2. Project & function breakdown
@@ -128,10 +176,11 @@ function myAggregateDataset(myRows, myQuotaLimitSec, myTz) {
     };
   }).sort(function (a, b) { return b.totalSec - a.totalSec; });
 
-  const myDailyList = Object.keys(myDailyQuota).sort().map(function (myK) {
-    const myItem = myDailyQuota[myK];
+  const mySeriesList = Object.keys(mySeriesBuckets).sort().map(function (myK) {
+    const myItem = mySeriesBuckets[myK];
     return {
-      dayKey: myItem.dayKey,
+      dayKey: myItem.bucketKey,
+      bucketKey: myItem.bucketKey,
       triggerSec: Number(myItem.triggerSec.toFixed(1)),
       totalSec: Number(myItem.totalSec.toFixed(1)),
       count: myItem.count,
@@ -140,8 +189,7 @@ function myAggregateDataset(myRows, myQuotaLimitSec, myTz) {
     };
   });
 
-  const myTodayItem = myDailyQuota[myTodayKey] || { triggerSec: 0, totalSec: 0, count: 0 };
-  const myTodayQuotaPercent = Number(((myTodayItem.triggerSec / myQuotaLimitSec) * 100).toFixed(1));
+  const myTodayQuotaPercent = Number(((myTodayTriggerSec / myQuotaLimitSec) * 100).toFixed(1));
 
   return {
     summary: {
@@ -149,11 +197,14 @@ function myAggregateDataset(myRows, myQuotaLimitSec, myTz) {
       totalDurationSec: Number(myTotalDurationSec.toFixed(1)),
       totalFailures: myTotalFailures,
       failureRate: myRows.length > 0 ? Number(((myTotalFailures / myRows.length) * 100).toFixed(1)) : 0,
-      todayQuotaSec: Number(myTodayItem.triggerSec.toFixed(1)),
+      todayQuotaSec: Number(myTodayTriggerSec.toFixed(1)),
       todayQuotaLimitSec: myQuotaLimitSec,
       todayQuotaPercent: myTodayQuotaPercent
     },
-    dailySeries: myDailyList,
+    dailySeries: mySeriesList,
+    resolution: myRequestedResolution || 'auto',
+    effectiveResolution: myEffectiveResolution,
     projects: myProjectsList
   };
 }
+

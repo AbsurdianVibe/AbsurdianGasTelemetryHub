@@ -14,12 +14,13 @@ function myAssertOwner_() {
 }
 
 /**
- * Get aggregated dashboard data for global time window.
+ * Get aggregated dashboard data for global time window and resolution.
  * @param {string} myFromIso - Start ISO timestamp.
  * @param {string} myToIso - End ISO timestamp.
+ * @param {string} [myResolution] - Target resolution (auto, 1d, 1h, 30m, 15m, 5m, 1m).
  * @return {Object} Dashboard payload.
  */
-function myApiGetDashboardData(myFromIso, myToIso) {
+function myApiGetDashboardData(myFromIso, myToIso, myResolution) {
   myAssertOwner_();
   const mySettings = myGetSettings();
   let myStart = myParseTimestampIso(myFromIso);
@@ -30,7 +31,14 @@ function myApiGetDashboardData(myFromIso, myToIso) {
   }
 
   const myRows = myReadProcessesRange(myStart, myEnd);
-  const myAggregated = myAggregateDataset(myRows, mySettings.quotaLimitSec, MY_DEFAULT_TIMEZONE);
+  const myAggregated = myAggregateDataset(
+    myRows,
+    mySettings.quotaLimitSec,
+    MY_DEFAULT_TIMEZONE,
+    myStart,
+    myEnd,
+    myResolution
+  );
   return {
     dashboard: myAggregated,
     settings: mySettings,
@@ -46,13 +54,15 @@ function myApiGetDashboardData(myFromIso, myToIso) {
  * Trigger manual telemetry synchronization.
  * @param {string} myFromIso - Start ISO timestamp.
  * @param {string} myToIso - End ISO timestamp.
+ * @param {string} [myResolution] - Target resolution.
  * @return {Object} Updated dashboard data.
  */
-function myApiTriggerManualSync(myFromIso, myToIso) {
+function myApiTriggerManualSync(myFromIso, myToIso, myResolution) {
   myAssertOwner_();
   myRunCollector();
-  return myApiGetDashboardData(myFromIso, myToIso);
+  return myApiGetDashboardData(myFromIso, myToIso, myResolution);
 }
+
 
 /**
  * Update application settings.

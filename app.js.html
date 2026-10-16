@@ -104,7 +104,7 @@
       myDailyQuotaChartInstance.destroy();
     }
 
-    const myLabels = myDailySeries.map(function (d) { return d.dayKey; });
+    const myLabels = myDailySeries.map(function (d) { return d.dayKey || d.bucketKey; });
 
     const myProjectNames = [];
     myDailySeries.forEach(function (myDay) {
@@ -138,9 +138,9 @@
         borderColor: myColor.border,
         backgroundColor: myColor.fill,
         fill: true,
-        tension: 0.3,
+        tension: 0.1,
         borderWidth: 2,
-        pointRadius: 2
+        pointRadius: myLabels.length > 50 ? 0 : 2
       };
     });
 
@@ -151,9 +151,9 @@
         borderColor: 'hsl(217, 91%, 60%)',
         backgroundColor: 'hsla(217, 91%, 60%, 0.1)',
         fill: true,
-        tension: 0.3,
+        tension: 0.1,
         borderWidth: 2,
-        pointRadius: 2
+        pointRadius: 0
       });
     }
 
@@ -188,7 +188,12 @@
           x: {
             stacked: true,
             grid: { color: 'hsla(217, 33%, 30%, 0.2)' },
-            ticks: { color: 'hsl(215, 20%, 65%)', font: { size: 11 } }
+            ticks: {
+              color: 'hsl(215, 20%, 65%)',
+              font: { size: 11 },
+              autoSkip: true,
+              maxTicksLimit: 12
+            }
           },
           y: {
             stacked: true,
@@ -296,6 +301,27 @@
 
   let myGlobalFromIso = '';
   let myGlobalToIso = '';
+  let myGlobalResolution = 'auto';
+
+  /**
+   * Set dynamic or manual resolution and refresh views.
+   * @param {string} myResKey - Target resolution (auto, 1d, 1h, 30m, 15m, 5m, 1m).
+   */
+  function mySetResolution(myResKey) {
+    myGlobalResolution = myResKey || 'auto';
+
+    document.querySelectorAll('.my-res-btn').forEach(function (myBtn) {
+      myBtn.classList.remove('my-active-preset');
+    });
+
+    const myBtnId = 'myResBtn' + myGlobalResolution.charAt(0).toUpperCase() + myGlobalResolution.slice(1);
+    const myTargetBtn = document.getElementById(myBtnId);
+    if (myTargetBtn) {
+      myTargetBtn.classList.add('my-active-preset');
+    }
+
+    myLoadDashboard(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
+  }
 
   /**
    * Convert Date object to datetime-local input string YYYY-MM-DDTHH:mm.
@@ -319,7 +345,7 @@
     document.getElementById('myInputTimeFrom').value = myToDatetimeInputValue(myStart);
     document.getElementById('myInputTimeTo').value = myToDatetimeInputValue(myNow);
 
-    document.querySelectorAll('.my-pill-btn').forEach(function (myBtn) {
+    document.querySelectorAll('.my-time-presets .my-pill-btn').forEach(function (myBtn) {
       myBtn.classList.remove('my-active-preset');
     });
 
@@ -336,17 +362,30 @@
     myGlobalFromIso = myFromVal ? new Date(myFromVal).toISOString() : '';
     myGlobalToIso = myToVal ? new Date(myToVal).toISOString() : '';
 
-    myLoadDashboard(myGlobalFromIso, myGlobalToIso);
+    myLoadDashboard(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
   }
 
   /**
    * Load dashboard data from backend and populate UI.
    * @param {string} myFromIso - Start ISO timestamp.
    * @param {string} myToIso - End ISO timestamp.
+   * @param {string} [myResolution] - Resolution code.
    */
-  async function myLoadDashboard(myFromIso, myToIso) {
+  async function myLoadDashboard(myFromIso, myToIso, myResolution) {
     try {
-      const myRes = await myCallServer('myApiGetDashboardData', myFromIso, myToIso);
+      const myRes = await myCallServer(
+        'myApiGetDashboardData',
+        myFromIso,
+        myToIso,
+        myResolution || myGlobalResolution
+      );
+
+      const myEffectiveRes = myRes.dashboard.effectiveResolution || '1d';
+      const myChartTitle = document.getElementById('myChartSectionTitle');
+      if (myChartTitle) {
+        myChartTitle.innerText = 'Miks zużycia kwoty wyzwalaczy per projekt (ziarnistość: ' + myEffectiveRes + ')';
+      }
+
       myRenderKpis(myRes.dashboard.summary);
       myRenderDailyChart(myRes.dashboard.dailySeries);
       myRenderProjectsShareChart(myRes.dashboard.projects);
@@ -390,7 +429,18 @@
     mySpinnerText.innerText = 'Pobieranie procesów...';
 
     try {
-      const myRes = await myCallServer('myApiTriggerManualSync', myGlobalFromIso, myGlobalToIso);
+      const myRes = await myCallServer(
+        'myApiTriggerManualSync',
+        myGlobalFromIso,
+        myGlobalToIso,
+        myGlobalResolution
+      );
+      const myEffectiveRes = myRes.dashboard.effectiveResolution || '1d';
+      const myChartTitle = document.getElementById('myChartSectionTitle');
+      if (myChartTitle) {
+        myChartTitle.innerText = 'Miks zużycia kwoty wyzwalaczy per projekt (ziarnistość: ' + myEffectiveRes + ')';
+      }
+
       myRenderKpis(myRes.dashboard.summary);
       myRenderDailyChart(myRes.dashboard.dailySeries);
       myRenderProjectsShareChart(myRes.dashboard.projects);
@@ -424,7 +474,7 @@
         quotaLimitSec: myQuota
       });
       alert('Ustawienia zapisane pomyślnie.');
-      myLoadDashboard(myGlobalFromIso, myGlobalToIso);
+      myLoadDashboard(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
     } catch (myErr) {
       alert('Błąd zapisu ustawień: ' + myErr.message);
     } finally {
@@ -435,6 +485,7 @@
 
   // Initial load
   document.addEventListener('DOMContentLoaded', function () {
-    myLoadDashboard('', '');
+    myLoadDashboard('', '', 'auto');
   });
+
 </script>

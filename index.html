@@ -57,6 +57,16 @@
         <button type="button" class="my-pill-btn my-active-preset" id="myPresetBtn30d" onclick="mySetTimeWindowPreset(30)">30 dni</button>
         <button type="button" class="my-pill-btn" onclick="mySetTimeWindowPreset(180)">Wszystko</button>
       </div>
+      <div class="my-time-resolutions" aria-label="Wybór rozdzielczości czasowej">
+        <span class="my-kpi-sub" style="margin-right: 4px;">Rozdzielczość:</span>
+        <button type="button" class="my-pill-btn my-res-btn my-active-preset" id="myResBtnAuto" onclick="mySetResolution('auto')">Auto</button>
+        <button type="button" class="my-pill-btn my-res-btn" id="myResBtn1d" onclick="mySetResolution('1d')">1d</button>
+        <button type="button" class="my-pill-btn my-res-btn" id="myResBtn1h" onclick="mySetResolution('1h')">1h</button>
+        <button type="button" class="my-pill-btn my-res-btn" id="myResBtn30m" onclick="mySetResolution('30m')">30m</button>
+        <button type="button" class="my-pill-btn my-res-btn" id="myResBtn15m" onclick="mySetResolution('15m')">15m</button>
+        <button type="button" class="my-pill-btn my-res-btn" id="myResBtn5m" onclick="mySetResolution('5m')">5m</button>
+        <button type="button" class="my-pill-btn my-res-btn" id="myResBtn1m" onclick="mySetResolution('1m')">1m</button>
+      </div>
     </aside>
 
     <!-- View: Overview -->
@@ -103,11 +113,12 @@
       <!-- Charts Section -->
       <section class="my-section-grid">
         <div class="my-card">
-          <h2 class="my-section-title">Dobowy miks zużycia kwoty wyzwalaczy per projekt (minuty:sekundy)</h2>
+          <h2 class="my-section-title" id="myChartSectionTitle">Miks zużycia kwoty wyzwalaczy per projekt (minuty:sekundy)</h2>
           <div class="my-chart-wrapper">
             <canvas id="myChartDailyQuota"></canvas>
           </div>
         </div>
+
         <div class="my-card">
           <h2 class="my-section-title">Udział projektów w czasie wykonania</h2>
           <div class="my-chart-wrapper">
