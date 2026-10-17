@@ -115,15 +115,14 @@
     box-shadow: 0 4px 14px var(--my-accent-glow);
   }
 
-  .my-btn:hover {
+  .my-btn:hover:not(:disabled) {
     background: var(--my-accent-hover);
-    transform: translateY(-1px);
   }
 
   .my-btn:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-    transform: none;
+    opacity: 0.45;
+    cursor: default;
+    box-shadow: none;
   }
 
   .my-btn-secondary {
@@ -133,7 +132,7 @@
     box-shadow: none;
   }
 
-  .my-btn-secondary:hover {
+  .my-btn-secondary:hover:not(:disabled) {
     background: var(--my-bg-card-hover);
     border-color: var(--my-border-focus);
   }
@@ -185,11 +184,10 @@
     border-radius: var(--my-radius-lg);
     padding: 20px;
     box-shadow: var(--my-shadow);
-    transition: transform 0.2s ease, border-color 0.2s ease;
+    transition: border-color 0.2s ease;
   }
 
   .my-card:hover {
-    transform: translateY(-2px);
     border-color: var(--my-border-focus);
   }
 

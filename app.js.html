@@ -43,6 +43,13 @@
         if (myViewSec) myViewSec.classList.remove('my-active');
       }
     });
+
+    const myTimeBar = document.getElementById('myTimeWindowBar');
+    if (myTimeBar) {
+      myTimeBar.style.display = (myTabKey === 'settings') ? 'none' : 'flex';
+    }
+
+    mySaveViewState_();
   }
 
   /**
@@ -304,6 +311,9 @@
   let myGlobalToIso = '';
   let myGlobalResolution = 'auto';
   let myGlobalPresetDays = 30;
+  let myAppliedFromInputValue_ = '';
+  let myAppliedToInputValue_ = '';
+  let myLoadedSettings_ = null;
 
   /**
    * Highlight active preset button.
@@ -340,6 +350,7 @@
   function mySaveViewState_() {
     try {
       const myState = {
+        activeTab: myActiveViewName,
         presetDays: myGlobalPresetDays,
         fromIso: myGlobalFromIso,
         toIso: myGlobalToIso,
@@ -362,9 +373,12 @@
       const myState = JSON.parse(myRaw);
       if (!myState || typeof myState !== 'object') return false;
 
+      let myRestored = false;
+
       if (myState.resolution) {
         myGlobalResolution = myState.resolution;
         myHighlightResolutionBtn_(myGlobalResolution);
+        myRestored = true;
       }
 
       if (myState.presetDays) {
@@ -379,18 +393,23 @@
         myGlobalFromIso = myStart.toISOString();
         myGlobalToIso = myNow.toISOString();
         myHighlightPresetBtn_(myGlobalPresetDays);
-        return true;
-      }
-
-      if (myState.fromIso && myState.toIso) {
+        myRestored = true;
+      } else if (myState.fromIso && myState.toIso) {
         myGlobalPresetDays = null;
         myHighlightPresetBtn_(null);
         myGlobalFromIso = myState.fromIso;
         myGlobalToIso = myState.toIso;
         document.getElementById('myInputTimeFrom').value = myToDatetimeInputValue(new Date(myGlobalFromIso));
         document.getElementById('myInputTimeTo').value = myToDatetimeInputValue(new Date(myGlobalToIso));
-        return true;
+        myRestored = true;
       }
+
+      if (myState.activeTab && ['overview', 'projects', 'settings'].includes(myState.activeTab)) {
+        mySwitchView(myState.activeTab);
+        myRestored = true;
+      }
+
+      return myRestored;
     } catch (myErr) {
       return false;
     }
@@ -428,8 +447,15 @@
     const myStart = new Date();
     myStart.setDate(myStart.getDate() - myDaysCount);
 
-    document.getElementById('myInputTimeFrom').value = myToDatetimeInputValue(myStart);
-    document.getElementById('myInputTimeTo').value = myToDatetimeInputValue(myNow);
+    const myFromVal = myToDatetimeInputValue(myStart);
+    const myToVal = myToDatetimeInputValue(myNow);
+
+    document.getElementById('myInputTimeFrom').value = myFromVal;
+    document.getElementById('myInputTimeTo').value = myToVal;
+
+    myAppliedFromInputValue_ = myFromVal;
+    myAppliedToInputValue_ = myToVal;
+    myCheckTimeWindowDirtyState_();
 
     myHighlightPresetBtn_(myDaysCount);
 
@@ -438,6 +464,37 @@
     mySaveViewState_();
 
     myLoadDashboard(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
+  }
+
+  /**
+   * Check dirty state for time window inputs.
+   */
+  function myCheckTimeWindowDirtyState_() {
+    const myFromEl = document.getElementById('myInputTimeFrom');
+    const myToEl = document.getElementById('myInputTimeTo');
+    const myApplyBtn = document.getElementById('myBtnApplyTimeWindow');
+    const myCancelBtn = document.getElementById('myBtnCancelTimeWindow');
+    if (!myApplyBtn || !myFromEl || !myToEl) return;
+
+    const myIsDirty = (myFromEl.value !== myAppliedFromInputValue_ || myToEl.value !== myAppliedToInputValue_);
+    myApplyBtn.disabled = !myIsDirty;
+    if (myCancelBtn) {
+      myCancelBtn.style.display = myIsDirty ? 'inline-flex' : 'none';
+    }
+  }
+
+  /**
+   * Revert time window inputs to currently applied values.
+   */
+  function myCancelTimeWindow() {
+    const myFromEl = document.getElementById('myInputTimeFrom');
+    const myToEl = document.getElementById('myInputTimeTo');
+    if (myFromEl) myFromEl.value = myAppliedFromInputValue_;
+    if (myToEl) myToEl.value = myAppliedToInputValue_;
+    if (myGlobalPresetDays) {
+      myHighlightPresetBtn_(myGlobalPresetDays);
+    }
+    myCheckTimeWindowDirtyState_();
   }
 
   /**
@@ -452,6 +509,10 @@
 
     myGlobalFromIso = myFromVal ? new Date(myFromVal).toISOString() : '';
     myGlobalToIso = myToVal ? new Date(myToVal).toISOString() : '';
+
+    myAppliedFromInputValue_ = myFromVal;
+    myAppliedToInputValue_ = myToVal;
+    myCheckTimeWindowDirtyState_();
 
     mySaveViewState_();
     myLoadDashboard(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
@@ -575,6 +636,7 @@
 
     myGlobalPresetDays = null;
     myHighlightPresetBtn_(null);
+    myCheckTimeWindowDirtyState_();
   }
 
   /**
@@ -605,6 +667,9 @@
       myEl.addEventListener('mousemove', function (myEvt) {
         myHandleDatetimeMouseMove_(myEvt, myEl);
       });
+
+      myEl.addEventListener('input', myCheckTimeWindowDirtyState_);
+      myEl.addEventListener('change', myCheckTimeWindowDirtyState_);
     });
   }
 
@@ -643,12 +708,20 @@
         if (!document.getElementById('myInputTimeTo').value) {
           document.getElementById('myInputTimeTo').value = myToDatetimeInputValue(new Date(myGlobalToIso));
         }
+        myAppliedFromInputValue_ = document.getElementById('myInputTimeFrom').value;
+        myAppliedToInputValue_ = document.getElementById('myInputTimeTo').value;
+        myCheckTimeWindowDirtyState_();
       }
 
       if (myRes.settings) {
-        document.getElementById('myInputRetention').value = myRes.settings.retentionDays;
-        document.getElementById('myRetentionDisplay').innerText = myRes.settings.retentionDays;
-        document.getElementById('myInputQuota').value = myRes.settings.quotaLimitSec;
+        myLoadedSettings_ = {
+          retentionDays: Number(myRes.settings.retentionDays) || 30,
+          quotaLimitSec: Number(myRes.settings.quotaLimitSec) || 5400
+        };
+        document.getElementById('myInputRetention').value = myLoadedSettings_.retentionDays;
+        document.getElementById('myRetentionDisplay').innerText = myLoadedSettings_.retentionDays;
+        document.getElementById('myInputQuota').value = myLoadedSettings_.quotaLimitSec;
+        myCheckSettingsDirtyState_();
       }
 
       if (myRes.lastSync) {
@@ -701,6 +774,47 @@
   }
 
   /**
+   * Check dirty state for configuration settings inputs.
+   */
+  function myCheckSettingsDirtyState_() {
+    const myRetentionEl = document.getElementById('myInputRetention');
+    const myQuotaEl = document.getElementById('myInputQuota');
+    const mySaveBtn = document.getElementById('myBtnSaveSettings');
+    const myCancelBtn = document.getElementById('myBtnCancelSettings');
+    if (!myRetentionEl || !myQuotaEl || !mySaveBtn) return;
+
+    const myCurrentRetention = Number(myRetentionEl.value);
+    const myCurrentQuota = Number(myQuotaEl.value);
+
+    const myIsDirty = !myLoadedSettings_ || (
+      myCurrentRetention !== myLoadedSettings_.retentionDays ||
+      myCurrentQuota !== myLoadedSettings_.quotaLimitSec
+    );
+
+    mySaveBtn.disabled = !myIsDirty;
+    if (myCancelBtn) {
+      myCancelBtn.style.display = myIsDirty ? 'inline-flex' : 'none';
+    }
+  }
+
+  /**
+   * Revert settings form inputs to last loaded baseline values.
+   */
+  function myCancelSettings() {
+    if (!myLoadedSettings_) return;
+    const myRetentionEl = document.getElementById('myInputRetention');
+    const myQuotaEl = document.getElementById('myInputQuota');
+    if (myRetentionEl) {
+      myRetentionEl.value = myLoadedSettings_.retentionDays;
+      document.getElementById('myRetentionDisplay').innerText = myLoadedSettings_.retentionDays;
+    }
+    if (myQuotaEl) {
+      myQuotaEl.value = myLoadedSettings_.quotaLimitSec;
+    }
+    myCheckSettingsDirtyState_();
+  }
+
+  /**
    * Save configuration settings to backend.
    */
   async function myHandleSaveSettings() {
@@ -716,13 +830,18 @@
         retentionDays: myRetention,
         quotaLimitSec: myQuota
       });
+      myLoadedSettings_ = {
+        retentionDays: myRetention,
+        quotaLimitSec: myQuota
+      };
+      myCheckSettingsDirtyState_();
       alert('Ustawienia zapisane pomyślnie.');
       myLoadDashboard(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
     } catch (myErr) {
       alert('Błąd zapisu ustawień: ' + myErr.message);
     } finally {
-      mySaveBtn.disabled = false;
       mySaveBtn.innerText = 'Zapisz ustawienia';
+      myCheckSettingsDirtyState_();
     }
   }
 

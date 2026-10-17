@@ -37,7 +37,7 @@
     </nav>
 
     <!-- Global Time Window Toolbar -->
-    <aside class="my-time-window-bar" aria-label="Globalne sterowanie oknem czasowym">
+    <aside id="myTimeWindowBar" class="my-time-window-bar" aria-label="Globalne sterowanie oknem czasowym">
       <div class="my-time-window-inputs">
         <span class="my-window-label">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
@@ -46,8 +46,11 @@
         <input type="datetime-local" id="myInputTimeFrom" class="my-datetime-input" aria-label="Początek okna czasowego">
         <span class="my-window-label">do:</span>
         <input type="datetime-local" id="myInputTimeTo" class="my-datetime-input" aria-label="Koniec okna czasowego">
-        <button id="myBtnApplyTimeWindow" class="my-btn" style="padding: 7px 14px; font-size: 13px;" onclick="myApplyTimeWindow()">
+        <button id="myBtnApplyTimeWindow" class="my-btn" style="padding: 7px 14px; font-size: 13px;" onclick="myApplyTimeWindow()" disabled>
           Filtruj
+        </button>
+        <button id="myBtnCancelTimeWindow" class="my-btn my-btn-secondary" style="padding: 7px 14px; font-size: 13px; display: none;" onclick="myCancelTimeWindow()">
+          Anuluj
         </button>
       </div>
       <div class="my-time-presets">
@@ -164,18 +167,19 @@
         
         <div class="my-form-group">
           <label class="my-label" for="myInputRetention">Okno Retencji Danych (Dni): <span id="myRetentionDisplay">30</span></label>
-          <input type="range" class="my-range" id="myInputRetention" min="7" max="180" value="30" oninput="document.getElementById('myRetentionDisplay').innerText = this.value">
+          <input type="range" class="my-range" id="myInputRetention" min="7" max="180" value="30" oninput="document.getElementById('myRetentionDisplay').innerText = this.value; myCheckSettingsDirtyState_();" onchange="myCheckSettingsDirtyState_()">
           <p class="my-kpi-sub" style="margin-top: 6px;">Określa liczbę dni przechowywania procesów w arkuszu (7–180 dni).</p>
         </div>
 
         <div class="my-form-group">
           <label class="my-label" for="myInputQuota">Limit dobowy kwoty wyzwalaczy (Sekundy)</label>
-          <input type="number" class="my-input" id="myInputQuota" value="5400">
+          <input type="number" class="my-input" id="myInputQuota" value="5400" oninput="myCheckSettingsDirtyState_()" onchange="myCheckSettingsDirtyState_()">
           <p class="my-kpi-sub" style="margin-top: 6px;">Konto Consumer: 5400s (90 min) | Konto Workspace: 21600s (6h).</p>
         </div>
 
-        <div style="display: flex; gap: 12px; margin-top: 24px;">
-          <button id="myBtnSaveSettings" class="my-btn" onclick="myHandleSaveSettings()">Zapisz ustawienia</button>
+        <div style="display: flex; gap: 12px; margin-top: 24px; align-items: center;">
+          <button id="myBtnSaveSettings" class="my-btn" onclick="myHandleSaveSettings()" disabled>Zapisz ustawienia</button>
+          <button id="myBtnCancelSettings" class="my-btn my-btn-secondary" style="display: none;" onclick="myCancelSettings()">Anuluj</button>
         </div>
       </div>
     </section>
