@@ -299,9 +299,103 @@
     myTbody.innerHTML = myHtml;
   }
 
+  const MY_STORAGE_KEY_VIEW_STATE = 'myGasTelemetryHub_viewState';
   let myGlobalFromIso = '';
   let myGlobalToIso = '';
   let myGlobalResolution = 'auto';
+  let myGlobalPresetDays = 30;
+
+  /**
+   * Highlight active preset button.
+   * @param {number|null} myDaysCount - Preset days count or null.
+   */
+  function myHighlightPresetBtn_(myDaysCount) {
+    document.querySelectorAll('.my-time-presets .my-pill-btn').forEach(function (myBtn) {
+      myBtn.classList.remove('my-active-preset');
+    });
+    if (myDaysCount) {
+      const myBtn = document.getElementById('myPresetBtn' + myDaysCount + 'd');
+      if (myBtn) myBtn.classList.add('my-active-preset');
+    }
+  }
+
+  /**
+   * Highlight active resolution button.
+   * @param {string} myResKey - Resolution key.
+   */
+  function myHighlightResolutionBtn_(myResKey) {
+    document.querySelectorAll('.my-res-btn').forEach(function (myBtn) {
+      myBtn.classList.remove('my-active-preset');
+    });
+    const myBtnId = 'myResBtn' + (myResKey || 'auto').charAt(0).toUpperCase() + (myResKey || 'auto').slice(1);
+    const myTargetBtn = document.getElementById(myBtnId);
+    if (myTargetBtn) {
+      myTargetBtn.classList.add('my-active-preset');
+    }
+  }
+
+  /**
+   * Persist current view state into browser localStorage.
+   */
+  function mySaveViewState_() {
+    try {
+      const myState = {
+        presetDays: myGlobalPresetDays,
+        fromIso: myGlobalFromIso,
+        toIso: myGlobalToIso,
+        resolution: myGlobalResolution
+      };
+      localStorage.setItem(MY_STORAGE_KEY_VIEW_STATE, JSON.stringify(myState));
+    } catch (myErr) {
+      // Ignore storage errors in private browsing
+    }
+  }
+
+  /**
+   * Restore view state from browser localStorage.
+   * @return {boolean} True if state was restored.
+   */
+  function myRestoreViewState_() {
+    try {
+      const myRaw = localStorage.getItem(MY_STORAGE_KEY_VIEW_STATE);
+      if (!myRaw) return false;
+      const myState = JSON.parse(myRaw);
+      if (!myState || typeof myState !== 'object') return false;
+
+      if (myState.resolution) {
+        myGlobalResolution = myState.resolution;
+        myHighlightResolutionBtn_(myGlobalResolution);
+      }
+
+      if (myState.presetDays) {
+        myGlobalPresetDays = myState.presetDays;
+        const myNow = new Date();
+        const myStart = new Date();
+        myStart.setDate(myStart.getDate() - myGlobalPresetDays);
+
+        document.getElementById('myInputTimeFrom').value = myToDatetimeInputValue(myStart);
+        document.getElementById('myInputTimeTo').value = myToDatetimeInputValue(myNow);
+
+        myGlobalFromIso = myStart.toISOString();
+        myGlobalToIso = myNow.toISOString();
+        myHighlightPresetBtn_(myGlobalPresetDays);
+        return true;
+      }
+
+      if (myState.fromIso && myState.toIso) {
+        myGlobalPresetDays = null;
+        myHighlightPresetBtn_(null);
+        myGlobalFromIso = myState.fromIso;
+        myGlobalToIso = myState.toIso;
+        document.getElementById('myInputTimeFrom').value = myToDatetimeInputValue(new Date(myGlobalFromIso));
+        document.getElementById('myInputTimeTo').value = myToDatetimeInputValue(new Date(myGlobalToIso));
+        return true;
+      }
+    } catch (myErr) {
+      return false;
+    }
+    return false;
+  }
 
   /**
    * Set dynamic or manual resolution and refresh views.
@@ -309,17 +403,8 @@
    */
   function mySetResolution(myResKey) {
     myGlobalResolution = myResKey || 'auto';
-
-    document.querySelectorAll('.my-res-btn').forEach(function (myBtn) {
-      myBtn.classList.remove('my-active-preset');
-    });
-
-    const myBtnId = 'myResBtn' + myGlobalResolution.charAt(0).toUpperCase() + myGlobalResolution.slice(1);
-    const myTargetBtn = document.getElementById(myBtnId);
-    if (myTargetBtn) {
-      myTargetBtn.classList.add('my-active-preset');
-    }
-
+    myHighlightResolutionBtn_(myGlobalResolution);
+    mySaveViewState_();
     myLoadDashboard(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
   }
 
@@ -338,6 +423,7 @@
    * @param {number} myDaysCount - Lookback days count.
    */
   function mySetTimeWindowPreset(myDaysCount) {
+    myGlobalPresetDays = myDaysCount;
     const myNow = new Date();
     const myStart = new Date();
     myStart.setDate(myStart.getDate() - myDaysCount);
@@ -345,11 +431,13 @@
     document.getElementById('myInputTimeFrom').value = myToDatetimeInputValue(myStart);
     document.getElementById('myInputTimeTo').value = myToDatetimeInputValue(myNow);
 
-    document.querySelectorAll('.my-time-presets .my-pill-btn').forEach(function (myBtn) {
-      myBtn.classList.remove('my-active-preset');
-    });
+    myHighlightPresetBtn_(myDaysCount);
 
-    myApplyTimeWindow();
+    myGlobalFromIso = myStart.toISOString();
+    myGlobalToIso = myNow.toISOString();
+    mySaveViewState_();
+
+    myLoadDashboard(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
   }
 
   /**
@@ -359,10 +447,165 @@
     const myFromVal = document.getElementById('myInputTimeFrom').value;
     const myToVal = document.getElementById('myInputTimeTo').value;
 
+    myGlobalPresetDays = null;
+    myHighlightPresetBtn_(null);
+
     myGlobalFromIso = myFromVal ? new Date(myFromVal).toISOString() : '';
     myGlobalToIso = myToVal ? new Date(myToVal).toISOString() : '';
 
+    mySaveViewState_();
     myLoadDashboard(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
+  }
+
+  let myCachedMetricsBounds_ = null;
+
+  window.addEventListener('resize', function () {
+    myCachedMetricsBounds_ = null;
+  });
+
+  /**
+   * Calculate and memoize text boundary metrics using offscreen Canvas.
+   * @param {HTMLInputElement} myInputEl - Reference datetime input.
+   * @return {Object} Cached boundary metrics.
+   */
+  function myGetMetricsBounds_(myInputEl) {
+    if (myCachedMetricsBounds_) return myCachedMetricsBounds_;
+
+    const myStyle = window.getComputedStyle(myInputEl);
+    const myPaddingLeft = parseFloat(myStyle.paddingLeft) || 10;
+
+    const myCanvas = document.createElement('canvas');
+    const myCtx = myCanvas.getContext('2d');
+    if (myCtx) {
+      myCtx.font = myStyle.font || (myStyle.fontSize + ' ' + myStyle.fontFamily);
+      myCachedMetricsBounds_ = {
+        paddingLeft: myPaddingLeft,
+        day: myCtx.measureText('03.').width,
+        month: myCtx.measureText('03.06.').width,
+        year: myCtx.measureText('03.06.2020 ').width,
+        hour: myCtx.measureText('03.06.2020 23:').width,
+        minute: myCtx.measureText('03.06.2020 23:24').width
+      };
+    } else {
+      myCachedMetricsBounds_ = {
+        paddingLeft: myPaddingLeft,
+        day: 24,
+        month: 48,
+        year: 88,
+        hour: 116,
+        minute: 148
+      };
+    }
+    return myCachedMetricsBounds_;
+  }
+
+  /**
+   * Determine targeted date segment based on mouse offsetX and text metrics.
+   * @param {number} myOffsetX - Mouse X offset.
+   * @param {HTMLInputElement} myInputEl - Target input element.
+   * @return {{ segment: string, label: string }|null} Segment info or null.
+   */
+  function myGetSegmentFromOffsetX_(myOffsetX, myInputEl) {
+    const myBounds = myGetMetricsBounds_(myInputEl);
+    const myTextX = myOffsetX - myBounds.paddingLeft;
+
+    if (myTextX < 0) return null;
+    if (myTextX > myBounds.minute + 10) return null;
+
+    if (myTextX <= myBounds.day) {
+      return { segment: 'day', label: 'Dzień (±1)' };
+    }
+    if (myTextX <= myBounds.month) {
+      return { segment: 'month', label: 'Miesiąc (±1)' };
+    }
+    if (myTextX <= myBounds.year) {
+      return { segment: 'year', label: 'Rok (±1)' };
+    }
+    if (myTextX <= myBounds.hour) {
+      return { segment: 'hour', label: 'Godzina (±1)' };
+    }
+    return { segment: 'minute', label: 'Minuta (±1)' };
+  }
+
+  /**
+   * Adjust date by segment and delta.
+   * @param {Date} myDate - Target date.
+   * @param {string} mySegment - Target segment (day, month, year, hour, minute).
+   * @param {number} myDelta - Delta (+1, -1, +5, etc).
+   * @return {Date} Modified date.
+   */
+  function myAdjustDateBySegment_(myDate, mySegment, myDelta) {
+    const myNewDate = new Date(myDate.getTime());
+    if (mySegment === 'day') {
+      myNewDate.setDate(myNewDate.getDate() + myDelta);
+    } else if (mySegment === 'month') {
+      myNewDate.setMonth(myNewDate.getMonth() + myDelta);
+    } else if (mySegment === 'year') {
+      myNewDate.setFullYear(myNewDate.getFullYear() + myDelta);
+    } else if (mySegment === 'hour') {
+      myNewDate.setHours(myNewDate.getHours() + myDelta);
+    } else if (mySegment === 'minute') {
+      myNewDate.setMinutes(myNewDate.getMinutes() + myDelta);
+    }
+    return myNewDate;
+  }
+
+  /**
+   * Handle wheel event on datetime input using mouse position heuristic.
+   * Updates input field value only without triggering server filter action.
+   * @param {WheelEvent} myEvt - Wheel event.
+   * @param {HTMLInputElement} myInputEl - Target input element.
+   */
+  function myHandleDatetimeWheel_(myEvt, myInputEl) {
+    const mySegmentData = myGetSegmentFromOffsetX_(myEvt.offsetX, myInputEl);
+    if (!mySegmentData) return;
+
+    myEvt.preventDefault();
+
+    let myCurrDate = myInputEl.value ? new Date(myInputEl.value) : new Date();
+    if (isNaN(myCurrDate.getTime())) myCurrDate = new Date();
+
+    const myStep = (myEvt.shiftKey && mySegmentData.segment === 'minute') ? 5 : 1;
+    const myDelta = (myEvt.deltaY < 0 ? 1 : -1) * myStep;
+
+    const myNextDate = myAdjustDateBySegment_(myCurrDate, mySegmentData.segment, myDelta);
+    myInputEl.value = myToDatetimeInputValue(myNextDate);
+
+    myInputEl.title = 'Kółko myszy: ' + mySegmentData.label;
+
+    myGlobalPresetDays = null;
+    myHighlightPresetBtn_(null);
+  }
+
+  /**
+   * Update input title tooltip on mouse hover over segments.
+   * @param {MouseEvent} myEvt - Mouse event.
+   * @param {HTMLInputElement} myInputEl - Target input.
+   */
+  function myHandleDatetimeMouseMove_(myEvt, myInputEl) {
+    const mySegmentData = myGetSegmentFromOffsetX_(myEvt.offsetX, myInputEl);
+    if (!mySegmentData) {
+      myInputEl.title = '';
+      return;
+    }
+    myInputEl.title = 'Kółko myszy: ' + mySegmentData.label + (mySegmentData.segment === 'minute' ? ' (Shift = ±5 min)' : '');
+  }
+
+  /**
+   * Attach mouse position heuristic wheel listeners to datetime inputs.
+   */
+  function myInitDatetimeWheelScrubbing_() {
+    ['myInputTimeFrom', 'myInputTimeTo'].forEach(function (myId) {
+      const myEl = document.getElementById(myId);
+      if (!myEl) return;
+      myEl.addEventListener('wheel', function (myEvt) {
+        myHandleDatetimeWheel_(myEvt, myEl);
+      }, { passive: false });
+
+      myEl.addEventListener('mousemove', function (myEvt) {
+        myHandleDatetimeMouseMove_(myEvt, myEl);
+      });
+    });
   }
 
   /**
@@ -485,7 +728,13 @@
 
   // Initial load
   document.addEventListener('DOMContentLoaded', function () {
-    myLoadDashboard('', '', 'auto');
+    myInitDatetimeWheelScrubbing_();
+    const myHasRestored = myRestoreViewState_();
+    if (myHasRestored) {
+      myLoadDashboard(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
+    } else {
+      myLoadDashboard('', '', 'auto');
+    }
   });
 
 </script>

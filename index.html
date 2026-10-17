@@ -52,10 +52,10 @@
       </div>
       <div class="my-time-presets">
         <span class="my-kpi-sub" style="margin-right: 4px;">Szybki wybór:</span>
-        <button type="button" class="my-pill-btn" onclick="mySetTimeWindowPreset(1)">24h</button>
-        <button type="button" class="my-pill-btn" onclick="mySetTimeWindowPreset(7)">7 dni</button>
+        <button type="button" class="my-pill-btn" id="myPresetBtn1d" onclick="mySetTimeWindowPreset(1)">24h</button>
+        <button type="button" class="my-pill-btn" id="myPresetBtn7d" onclick="mySetTimeWindowPreset(7)">7 dni</button>
         <button type="button" class="my-pill-btn my-active-preset" id="myPresetBtn30d" onclick="mySetTimeWindowPreset(30)">30 dni</button>
-        <button type="button" class="my-pill-btn" onclick="mySetTimeWindowPreset(180)">Wszystko</button>
+        <button type="button" class="my-pill-btn" id="myPresetBtn180d" onclick="mySetTimeWindowPreset(180)">Wszystko</button>
       </div>
       <div class="my-time-resolutions" aria-label="Wybór rozdzielczości czasowej">
         <span class="my-kpi-sub" style="margin-right: 4px;">Rozdzielczość:</span>
