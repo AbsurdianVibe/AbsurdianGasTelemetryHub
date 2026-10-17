@@ -124,6 +124,38 @@ function myReadProcessesRange(myFromIso, myToIso) {
 }
 
 /**
+ * Read processes from sheet newer than given ISO timestamp.
+ * @param {string} mySinceIso - Threshold ISO timestamp.
+ * @return {Array<IProcessRow>} New processes.
+ */
+function myReadProcessesSince(mySinceIso) {
+  const mySheet = myEnsureSpreadsheet();
+  const myLastRow = mySheet.getLastRow();
+  if (myLastRow <= 1) return [];
+
+  const mySinceMs = mySinceIso ? new Date(mySinceIso).getTime() : 0;
+  const myValues = mySheet.getRange(2, 1, myLastRow - 1, MY_RAW_HEADERS.length).getValues();
+
+  const myRows = [];
+  myValues.forEach(function (myV) {
+    const myTimeMs = new Date(myV[5]).getTime();
+    if (myTimeMs <= mySinceMs) return;
+    myRows.push({
+      key: myV[0],
+      projectName: myV[1],
+      functionName: myV[2],
+      processType: myV[3],
+      processStatus: myV[4],
+      startTime: myV[5],
+      durationSec: Number(myV[6]) || 0,
+      collectedAt: myV[7]
+    });
+  });
+  return myRows;
+}
+
+
+/**
  * Prune rows older than retention threshold.
  * @param {number} myRetentionDays - Max age in days.
  * @return {number} Count of removed rows.

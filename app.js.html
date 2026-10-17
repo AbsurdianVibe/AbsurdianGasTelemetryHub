@@ -307,6 +307,10 @@
   }
 
   const MY_STORAGE_KEY_VIEW_STATE = 'myGasTelemetryHub_viewState';
+  const MY_STORAGE_KEY_PROCESSES = 'myGasTelemetryHub_cachedProcesses';
+  const MY_STORAGE_KEY_LAST_SYNC = 'myGasTelemetryHub_lastSync';
+  const MY_STORAGE_KEY_SETTINGS = 'myGasTelemetryHub_settings';
+
   let myGlobalFromIso = '';
   let myGlobalToIso = '';
   let myGlobalResolution = 'auto';
@@ -315,16 +319,114 @@
   let myAppliedToInputValue_ = '';
   let myLoadedSettings_ = null;
 
+  let myCachedProcesses_ = [];
+  let myCachedMaxTime_ = '';
+  let myClientLastSync_ = '';
+  let myLastFreshnessCheckMs_ = 0;
+  let mySettings_ = { retentionDays: 30, quotaLimitSec: 5400 };
+
+  /**
+   * Toggle dashboard loading overlay.
+   * @param {boolean} myIsLoading - Loading state.
+   * @param {string} [myMessage] - Optional message.
+   */
+  function mySetDashboardLoadingState_(myIsLoading, myMessage) {
+    const myOverlay = document.getElementById('myDashboardLoadingOverlay');
+    const myText = document.getElementById('myDashboardLoadingText');
+    if (myText && myMessage) myText.innerText = myMessage;
+    if (myOverlay) {
+      if (myIsLoading) myOverlay.classList.add('my-active');
+      else myOverlay.classList.remove('my-active');
+    }
+  }
+
+  /**
+   * Save processes array and sync timestamp to localStorage.
+   */
+  function mySaveProcessesToStorage_() {
+    try {
+      localStorage.setItem(MY_STORAGE_KEY_LAST_SYNC, myClientLastSync_ || '');
+      localStorage.setItem(MY_STORAGE_KEY_SETTINGS, JSON.stringify(mySettings_));
+      localStorage.setItem(MY_STORAGE_KEY_PROCESSES, JSON.stringify(myCachedProcesses_));
+    } catch (myErr) {
+      // Ignore quota exceeded
+    }
+  }
+
+  /**
+   * Restore processes array from localStorage.
+   * @return {boolean} True if restored.
+   */
+  function myRestoreProcessesFromStorage_() {
+    try {
+      const myRaw = localStorage.getItem(MY_STORAGE_KEY_PROCESSES);
+      const mySync = localStorage.getItem(MY_STORAGE_KEY_LAST_SYNC);
+      const mySettingsRaw = localStorage.getItem(MY_STORAGE_KEY_SETTINGS);
+      if (mySettingsRaw) {
+        mySettings_ = JSON.parse(mySettingsRaw);
+        myLoadedSettings_ = {
+          retentionDays: Number(mySettings_.retentionDays) || 30,
+          quotaLimitSec: Number(mySettings_.quotaLimitSec) || 5400
+        };
+        const myRetEl = document.getElementById('myInputRetention');
+        const myRetDisp = document.getElementById('myRetentionDisplay');
+        const myQuotaEl = document.getElementById('myInputQuota');
+        if (myRetEl) myRetEl.value = myLoadedSettings_.retentionDays;
+        if (myRetDisp) myRetDisp.innerText = myLoadedSettings_.retentionDays;
+        if (myQuotaEl) myQuotaEl.value = myLoadedSettings_.quotaLimitSec;
+        myCheckSettingsDirtyState_();
+      }
+      if (myRaw) {
+        myCachedProcesses_ = JSON.parse(myRaw);
+        myClientLastSync_ = mySync || '';
+        myUpdateCachedMaxTime_();
+        return myCachedProcesses_.length > 0;
+      }
+    } catch (myErr) {
+      myCachedProcesses_ = [];
+    }
+    return false;
+  }
+
+  /**
+   * Prune cached processes older than retention threshold.
+   */
+  function myPruneClientExpiredRows_() {
+    if (!mySettings_ || !mySettings_.retentionDays || !myCachedProcesses_ || myCachedProcesses_.length === 0) return;
+    const myCutoffMs = Date.now() - (Number(mySettings_.retentionDays) * 86400000);
+    const myInitialCount = myCachedProcesses_.length;
+    myCachedProcesses_ = myCachedProcesses_.filter(function (p) {
+      return new Date(p.startTime).getTime() >= myCutoffMs;
+    });
+    if (myCachedProcesses_.length !== myInitialCount) {
+      myUpdateCachedMaxTime_();
+      mySaveProcessesToStorage_();
+    }
+  }
+
+  /**
+   * Recalculate highest startTime in cached processes.
+   */
+  function myUpdateCachedMaxTime_() {
+    let myMaxMs = 0;
+    myCachedProcesses_.forEach(function (myP) {
+      const myMs = new Date(myP.startTime).getTime();
+      if (myMs > myMaxMs) myMaxMs = myMs;
+    });
+    myCachedMaxTime_ = myMaxMs > 0 ? new Date(myMaxMs).toISOString() : '';
+  }
+
   /**
    * Highlight active preset button.
-   * @param {number|null} myDaysCount - Preset days count or null.
+   * @param {number|string|null} myPresetKey - Preset key or null.
    */
-  function myHighlightPresetBtn_(myDaysCount) {
+  function myHighlightPresetBtn_(myPresetKey) {
     document.querySelectorAll('.my-time-presets .my-pill-btn').forEach(function (myBtn) {
       myBtn.classList.remove('my-active-preset');
     });
-    if (myDaysCount) {
-      const myBtn = document.getElementById('myPresetBtn' + myDaysCount + 'd');
+    if (myPresetKey) {
+      const myId = (myPresetKey === 'all') ? 'myPresetBtnAll' : ('myPresetBtn' + myPresetKey + 'd');
+      const myBtn = document.getElementById(myId);
       if (myBtn) myBtn.classList.add('my-active-preset');
     }
   }
@@ -383,12 +485,21 @@
 
       if (myState.presetDays) {
         myGlobalPresetDays = myState.presetDays;
+        const myDays = (myState.presetDays === 'all') ?
+          ((mySettings_ && mySettings_.retentionDays) ? mySettings_.retentionDays : 30) :
+          Number(myState.presetDays);
         const myNow = new Date();
         const myStart = new Date();
-        myStart.setDate(myStart.getDate() - myGlobalPresetDays);
+        myStart.setDate(myStart.getDate() - myDays);
 
-        document.getElementById('myInputTimeFrom').value = myToDatetimeInputValue(myStart);
-        document.getElementById('myInputTimeTo').value = myToDatetimeInputValue(myNow);
+        const myFromVal = myToDatetimeInputValue(myStart);
+        const myToVal = myToDatetimeInputValue(myNow);
+
+        document.getElementById('myInputTimeFrom').value = myFromVal;
+        document.getElementById('myInputTimeTo').value = myToVal;
+
+        myAppliedFromInputValue_ = myFromVal;
+        myAppliedToInputValue_ = myToVal;
 
         myGlobalFromIso = myStart.toISOString();
         myGlobalToIso = myNow.toISOString();
@@ -399,8 +510,12 @@
         myHighlightPresetBtn_(null);
         myGlobalFromIso = myState.fromIso;
         myGlobalToIso = myState.toIso;
-        document.getElementById('myInputTimeFrom').value = myToDatetimeInputValue(new Date(myGlobalFromIso));
-        document.getElementById('myInputTimeTo').value = myToDatetimeInputValue(new Date(myGlobalToIso));
+        const myFromVal = myToDatetimeInputValue(new Date(myGlobalFromIso));
+        const myToVal = myToDatetimeInputValue(new Date(myGlobalToIso));
+        document.getElementById('myInputTimeFrom').value = myFromVal;
+        document.getElementById('myInputTimeTo').value = myToVal;
+        myAppliedFromInputValue_ = myFromVal;
+        myAppliedToInputValue_ = myToVal;
         myRestored = true;
       }
 
@@ -424,7 +539,7 @@
     myGlobalResolution = myResKey || 'auto';
     myHighlightResolutionBtn_(myGlobalResolution);
     mySaveViewState_();
-    myLoadDashboard(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
+    myRenderFromLocalCache_(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
   }
 
   /**
@@ -442,10 +557,14 @@
    * @param {number} myDaysCount - Lookback days count.
    */
   function mySetTimeWindowPreset(myDaysCount) {
+    let myDays = myDaysCount;
+    if (myDaysCount === 'all') {
+      myDays = (mySettings_ && mySettings_.retentionDays) ? mySettings_.retentionDays : 30;
+    }
     myGlobalPresetDays = myDaysCount;
     const myNow = new Date();
     const myStart = new Date();
-    myStart.setDate(myStart.getDate() - myDaysCount);
+    myStart.setDate(myStart.getDate() - Number(myDays));
 
     const myFromVal = myToDatetimeInputValue(myStart);
     const myToVal = myToDatetimeInputValue(myNow);
@@ -679,58 +798,401 @@
    * @param {string} myToIso - End ISO timestamp.
    * @param {string} [myResolution] - Resolution code.
    */
-  async function myLoadDashboard(myFromIso, myToIso, myResolution) {
-    try {
-      const myRes = await myCallServer(
-        'myApiGetDashboardData',
-        myFromIso,
-        myToIso,
-        myResolution || myGlobalResolution
-      );
+  /**
+   * Calculate percentile from array of numbers.
+   * @param {Array<number>} myNumbers - List of numbers.
+   * @param {number} myPercentile - Target percentile.
+   * @return {number} Percentile value.
+   */
+  function myClientCalculatePercentile_(myNumbers, myPercentile) {
+    if (!myNumbers || myNumbers.length === 0) return 0;
+    const mySorted = myNumbers.slice().sort(function (a, b) { return a - b; });
+    const myIndex = Math.ceil((myPercentile / 100) * mySorted.length) - 1;
+    return Number(mySorted[Math.max(0, myIndex)].toFixed(2));
+  }
 
-      const myEffectiveRes = myRes.dashboard.effectiveResolution || '1d';
-      const myChartTitle = document.getElementById('myChartSectionTitle');
-      if (myChartTitle) {
-        myChartTitle.innerText = 'Miks zużycia kwoty wyzwalaczy per projekt (ziarnistość: ' + myEffectiveRes + ')';
+  /**
+   * Resolve auto resolution for client duration.
+   * @param {string} myFromIso - Start ISO.
+   * @param {string} myToIso - End ISO.
+   * @return {string} Resolution code.
+   */
+  function myResolveClientAutoResolution_(myFromIso, myToIso) {
+    const myFromMs = myFromIso ? new Date(myFromIso).getTime() : 0;
+    const myToMs = myToIso ? new Date(myToIso).getTime() : Date.now();
+    const myDiffHours = Math.max(0, (myToMs - myFromMs) / 3600000);
+    if (myDiffHours > 336) return '1d';
+    if (myDiffHours > 72) return '1h';
+    if (myDiffHours > 24) return '30m';
+    if (myDiffHours > 6) return '15m';
+    if (myDiffHours > 2) return '5m';
+    return '1m';
+  }
+
+  /**
+   * Get bucket step in milliseconds.
+   * @param {string} myResolution - Resolution code.
+   * @return {number} Milliseconds.
+   */
+  function myGetClientBucketStepMs_(myResolution) {
+    if (myResolution === '1d') return 86400000;
+    if (myResolution === '1h') return 3600000;
+    if (myResolution === '30m') return 1800000;
+    if (myResolution === '15m') return 900000;
+    if (myResolution === '5m') return 300000;
+    return 60000;
+  }
+
+  /**
+   * Format date into bucket key in local timezone.
+   * @param {Date|string|number} myDateVal - Date value.
+   * @param {string} myResolution - Target resolution.
+   * @return {string} Bucket key string.
+   */
+  function myGetClientBucketKey_(myDateVal, myResolution) {
+    const myDate = new Date(myDateVal);
+    if (isNaN(myDate.getTime())) return '';
+
+    const myPad = function (n) { return n < 10 ? '0' + n : '' + n; };
+    const myYmd = myDate.getFullYear() + '-' + myPad(myDate.getMonth() + 1) + '-' + myPad(myDate.getDate());
+
+    if (myResolution === '1d') {
+      return myYmd;
+    }
+    const myH = myPad(myDate.getHours());
+    if (myResolution === '1h') {
+      return myYmd + ' ' + myH + ':00';
+    }
+
+    let myStep = 1;
+    if (myResolution === '30m') myStep = 30;
+    else if (myResolution === '15m') myStep = 15;
+    else if (myResolution === '5m') myStep = 5;
+
+    const myBucketM = Math.floor(myDate.getMinutes() / myStep) * myStep;
+    return myYmd + ' ' + myH + ':' + myPad(myBucketM);
+  }
+
+  /**
+   * In-memory aggregation engine running in browser RAM.
+   * @param {Array<Object>} myProcesses - Cached processes.
+   * @param {string} myFromIso - Start ISO.
+   * @param {string} myToIso - End ISO.
+   * @param {string} myRequestedResolution - Resolution code.
+   * @return {Object} Aggregated DTO identical to backend format.
+   */
+  function myAggregateClientDataset_(myProcesses, myFromIso, myToIso, myRequestedResolution) {
+    const myProjects = {};
+    const mySeriesBuckets = {};
+    let myTotalDurationSec = 0;
+    let myTotalFailures = 0;
+    let myTodayTriggerSec = 0;
+
+    const myPad = function (n) { return n < 10 ? '0' + n : '' + n; };
+    const myNow = new Date();
+    const myTodayKey = myNow.getFullYear() + '-' + myPad(myNow.getMonth() + 1) + '-' + myPad(myNow.getDate());
+
+    let myEffectiveResolution = myRequestedResolution;
+    if (!myEffectiveResolution || myEffectiveResolution === 'auto') {
+      myEffectiveResolution = myResolveClientAutoResolution_(myFromIso, myToIso);
+    }
+
+    const myFromMs = myFromIso ? new Date(myFromIso).getTime() : 0;
+    const myToMs = myToIso ? new Date(myToIso).getTime() : Infinity;
+
+    // Pre-fill continuous buckets up to 1000 points
+    if (myFromIso && myToIso && myToMs < Infinity) {
+      const myStepMs = myGetClientBucketStepMs_(myEffectiveResolution);
+      const myStepsCount = Math.floor((myToMs - myFromMs) / myStepMs);
+      if (myStepsCount > 0 && myStepsCount <= 1000) {
+        for (let myCurrMs = myFromMs; myCurrMs <= myToMs; myCurrMs += myStepMs) {
+          const myFillKey = myGetClientBucketKey_(myCurrMs, myEffectiveResolution);
+          if (myFillKey && !mySeriesBuckets[myFillKey]) {
+            mySeriesBuckets[myFillKey] = {
+              bucketKey: myFillKey,
+              triggerSec: 0,
+              totalSec: 0,
+              count: 0,
+              byProject: {}
+            };
+          }
+        }
+      }
+    }
+
+    let myFilteredCount = 0;
+    myProcesses.forEach(function (myRow) {
+      const myRowTimeMs = new Date(myRow.startTime).getTime();
+      const myIsFail = myRow.processStatus === 'FAILED' || myRow.processStatus === 'TIMED_OUT';
+      const myIsQuotaType = myRow.processType === 'TIME_DRIVEN' || myRow.processType === 'TRIGGER';
+
+      const myRowDate = new Date(myRow.startTime);
+      const myRowDay = myRowDate.getFullYear() + '-' + myPad(myRowDate.getMonth() + 1) + '-' + myPad(myRowDate.getDate());
+      if (myRowDay === myTodayKey && myIsQuotaType) {
+        myTodayTriggerSec += myRow.durationSec;
       }
 
-      myRenderKpis(myRes.dashboard.summary);
-      myRenderDailyChart(myRes.dashboard.dailySeries);
-      myRenderProjectsShareChart(myRes.dashboard.projects);
-      myRenderProjectsTable(myRes.dashboard.projects);
+      if (myRowTimeMs < myFromMs || myRowTimeMs > myToMs) return;
 
-      if (myRes.timeWindow) {
-        myGlobalFromIso = myRes.timeWindow.fromIso;
-        myGlobalToIso = myRes.timeWindow.toIso;
-        if (!document.getElementById('myInputTimeFrom').value) {
-          document.getElementById('myInputTimeFrom').value = myToDatetimeInputValue(new Date(myGlobalFromIso));
+      myFilteredCount++;
+      myTotalDurationSec += myRow.durationSec;
+      if (myIsFail) myTotalFailures++;
+
+      // 1. Time-series bucket accumulation
+      const myBucketKey = myGetClientBucketKey_(myRow.startTime, myEffectiveResolution);
+      if (myBucketKey) {
+        if (!mySeriesBuckets[myBucketKey]) {
+          mySeriesBuckets[myBucketKey] = {
+            bucketKey: myBucketKey,
+            triggerSec: 0,
+            totalSec: 0,
+            count: 0,
+            byProject: {}
+          };
         }
-        if (!document.getElementById('myInputTimeTo').value) {
-          document.getElementById('myInputTimeTo').value = myToDatetimeInputValue(new Date(myGlobalToIso));
+        mySeriesBuckets[myBucketKey].totalSec += myRow.durationSec;
+        mySeriesBuckets[myBucketKey].count++;
+        if (myIsQuotaType) {
+          mySeriesBuckets[myBucketKey].triggerSec += myRow.durationSec;
+          mySeriesBuckets[myBucketKey].byProject[myRow.projectName] =
+            (mySeriesBuckets[myBucketKey].byProject[myRow.projectName] || 0) + myRow.durationSec;
         }
-        myAppliedFromInputValue_ = document.getElementById('myInputTimeFrom').value;
-        myAppliedToInputValue_ = document.getElementById('myInputTimeTo').value;
+      }
+
+      // 2. Project & function breakdown
+      if (!myProjects[myRow.projectName]) {
+        myProjects[myRow.projectName] = {
+          projectName: myRow.projectName,
+          totalSec: 0,
+          count: 0,
+          failCount: 0,
+          functions: {}
+        };
+      }
+      const myProj = myProjects[myRow.projectName];
+      myProj.totalSec += myRow.durationSec;
+      myProj.count++;
+      if (myIsFail) myProj.failCount++;
+
+      if (!myProj.functions[myRow.functionName]) {
+        myProj.functions[myRow.functionName] = {
+          functionName: myRow.functionName,
+          totalSec: 0,
+          count: 0,
+          minSec: Infinity,
+          maxSec: 0,
+          durations: [],
+          statuses: {}
+        };
+      }
+      const myFn = myProj.functions[myRow.functionName];
+      myFn.totalSec += myRow.durationSec;
+      myFn.count++;
+      myFn.minSec = Math.min(myFn.minSec, myRow.durationSec);
+      myFn.maxSec = Math.max(myFn.maxSec, myRow.durationSec);
+      myFn.durations.push(myRow.durationSec);
+      myFn.statuses[myRow.processStatus] = (myFn.statuses[myRow.processStatus] || 0) + 1;
+    });
+
+    const myQuotaLimitSec = (mySettings_ && mySettings_.quotaLimitSec) ? mySettings_.quotaLimitSec : 5400;
+
+    const myProjectsList = Object.keys(myProjects).map(function (myProjName) {
+      const myP = myProjects[myProjName];
+      const myFunctionsList = Object.keys(myP.functions).map(function (myFnName) {
+        const myF = myP.functions[myFnName];
+        return {
+          functionName: myF.functionName,
+          count: myF.count,
+          totalSec: Number(myF.totalSec.toFixed(2)),
+          avgSec: Number((myF.totalSec / myF.count).toFixed(2)),
+          minSec: myF.minSec === Infinity ? 0 : Number(myF.minSec.toFixed(2)),
+          maxSec: Number(myF.maxSec.toFixed(2)),
+          p95Sec: myClientCalculatePercentile_(myF.durations, 95),
+          statuses: myF.statuses
+        };
+      }).sort(function (a, b) { return b.totalSec - a.totalSec; });
+
+      return {
+        projectName: myP.projectName,
+        totalSec: Number(myP.totalSec.toFixed(2)),
+        count: myP.count,
+        failCount: myP.failCount,
+        functions: myFunctionsList
+      };
+    }).sort(function (a, b) { return b.totalSec - a.totalSec; });
+
+    const mySeriesList = Object.keys(mySeriesBuckets).sort().map(function (myK) {
+      const myItem = mySeriesBuckets[myK];
+      return {
+        dayKey: myItem.bucketKey,
+        bucketKey: myItem.bucketKey,
+        triggerSec: Number(myItem.triggerSec.toFixed(1)),
+        totalSec: Number(myItem.totalSec.toFixed(1)),
+        count: myItem.count,
+        percentUsed: Number(((myItem.triggerSec / myQuotaLimitSec) * 100).toFixed(1)),
+        byProject: myItem.byProject
+      };
+    });
+
+    const myTodayQuotaPercent = Number(((myTodayTriggerSec / myQuotaLimitSec) * 100).toFixed(1));
+
+    return {
+      summary: {
+        totalRuns: myFilteredCount,
+        totalDurationSec: Number(myTotalDurationSec.toFixed(1)),
+        totalFailures: myTotalFailures,
+        failureRate: myFilteredCount > 0 ? Number(((myTotalFailures / myFilteredCount) * 100).toFixed(1)) : 0,
+        todayQuotaSec: Number(myTodayTriggerSec.toFixed(1)),
+        todayQuotaLimitSec: myQuotaLimitSec,
+        todayQuotaPercent: myTodayQuotaPercent
+      },
+      dailySeries: mySeriesList,
+      resolution: myRequestedResolution || 'auto',
+      effectiveResolution: myEffectiveResolution,
+      projects: myProjectsList
+    };
+  }
+
+  /**
+   * Render dashboard views using local in-memory dataset in 0 ms.
+   * @param {string} myFromIso - Start ISO.
+   * @param {string} myToIso - End ISO.
+   * @param {string} [myResolution] - Target resolution.
+   */
+  function myRenderFromLocalCache_(myFromIso, myToIso, myResolution) {
+    const myAggregated = myAggregateClientDataset_(
+      myCachedProcesses_,
+      myFromIso || myGlobalFromIso,
+      myToIso || myGlobalToIso,
+      myResolution || myGlobalResolution
+    );
+
+    const myChartTitle = document.getElementById('myChartSectionTitle');
+    if (myChartTitle) {
+      myChartTitle.innerText = 'Miks zużycia kwoty wyzwalaczy per projekt (ziarnistość: ' + myAggregated.effectiveResolution + ')';
+    }
+
+    myRenderKpis(myAggregated.summary);
+    myRenderDailyChart(myAggregated.dailySeries);
+    myRenderProjectsShareChart(myAggregated.projects);
+    myRenderProjectsTable(myAggregated.projects);
+
+    if (myClientLastSync_) {
+      document.getElementById('myStatusSubtitle').innerText = 'Ostatnia synchronizacja: ' + new Date(myClientLastSync_).toLocaleString('pl-PL');
+    }
+  }
+
+  /**
+   * Check telemetry freshness on backend, merge delta if available, and render in-memory.
+   * @param {string} myFromIso - Start ISO timestamp.
+   * @param {string} myToIso - End ISO timestamp.
+   * @param {string} [myResolution] - Target resolution.
+   */
+  async function myEnsureFreshnessAndRender_(myFromIso, myToIso, myResolution) {
+    const myTargetToMs = myToIso ? new Date(myToIso).getTime() : Date.now();
+    const myCachedMaxMs = myCachedMaxTime_ ? new Date(myCachedMaxTime_).getTime() : 0;
+    const myNow = Date.now();
+
+    const myTouchesPresent = myTargetToMs >= myCachedMaxMs;
+    const myShouldCheckFreshness = myTouchesPresent && (myNow - myLastFreshnessCheckMs_ > 60000);
+
+    if (myShouldCheckFreshness) {
+      try {
+        myLastFreshnessCheckMs_ = myNow;
+        const myFreshness = await myCallServer('myApiCheckTelemetryFreshness', myClientLastSync_);
+        if (myFreshness && myFreshness.isStale) {
+          const myDeltaRes = await myCallServer('myApiGetDeltaProcesses', myCachedMaxTime_);
+          if (myDeltaRes && myDeltaRes.delta && myDeltaRes.delta.length > 0) {
+            const myExistingKeys = {};
+            myCachedProcesses_.forEach(function (p) { myExistingKeys[p.key] = true; });
+            myDeltaRes.delta.forEach(function (p) {
+              if (!myExistingKeys[p.key]) {
+                myCachedProcesses_.push(p);
+                myExistingKeys[p.key] = true;
+              }
+            });
+            myUpdateCachedMaxTime_();
+            myClientLastSync_ = myDeltaRes.lastCollectionTime || myFreshness.serverLastSync;
+            mySaveProcessesToStorage_();
+          } else if (myFreshness.serverLastSync) {
+            myClientLastSync_ = myFreshness.serverLastSync;
+            mySaveProcessesToStorage_();
+          }
+        }
+      } catch (myErr) {
+        console.warn('Freshness check failed, rendering from memory:', myErr);
+      }
+    }
+
+    myRenderFromLocalCache_(myFromIso, myToIso, myResolution);
+  }
+
+  /**
+   * Bootstrap full initial dataset from server with visual loading overlay.
+   * @param {string} myFromIso - Target from ISO.
+   * @param {string} myToIso - Target to ISO.
+   * @param {string} [myResolution] - Target resolution.
+   */
+  async function myBootstrapInitialDataset_(myFromIso, myToIso, myResolution) {
+    mySetDashboardLoadingState_(true, 'Pobieranie bazy procesów z arkusza...');
+    try {
+      const myRes = await myCallServer('myApiGetInitialDataset');
+      myCachedProcesses_ = myRes.processes || [];
+      if (myRes.settings) {
+        mySettings_ = myRes.settings;
+        myLoadedSettings_ = {
+          retentionDays: Number(mySettings_.retentionDays) || 30,
+          quotaLimitSec: Number(mySettings_.quotaLimitSec) || 5400
+        };
+        const myRetEl = document.getElementById('myInputRetention');
+        const myRetDisp = document.getElementById('myRetentionDisplay');
+        const myQuotaEl = document.getElementById('myInputQuota');
+        if (myRetEl) myRetEl.value = myLoadedSettings_.retentionDays;
+        if (myRetDisp) myRetDisp.innerText = myLoadedSettings_.retentionDays;
+        if (myQuotaEl) myQuotaEl.value = myLoadedSettings_.quotaLimitSec;
+        myCheckSettingsDirtyState_();
+      }
+      myClientLastSync_ = myRes.lastCollectionTime || myRes.lastSync || '';
+      myUpdateCachedMaxTime_();
+      mySaveProcessesToStorage_();
+
+      if (myGlobalPresetDays === 'all') {
+        const myAllDays = (mySettings_ && mySettings_.retentionDays) ? mySettings_.retentionDays : 30;
+        const myNow = new Date();
+        const myStart = new Date();
+        myStart.setDate(myStart.getDate() - myAllDays);
+        myGlobalFromIso = myStart.toISOString();
+        myGlobalToIso = myNow.toISOString();
+        const myFromEl = document.getElementById('myInputTimeFrom');
+        const myToEl = document.getElementById('myInputTimeTo');
+        if (myFromEl) myFromEl.value = myToDatetimeInputValue(myStart);
+        if (myToEl) myToEl.value = myToDatetimeInputValue(myNow);
+        myAppliedFromInputValue_ = myFromEl ? myFromEl.value : '';
+        myAppliedToInputValue_ = myToEl ? myToEl.value : '';
         myCheckTimeWindowDirtyState_();
       }
 
-      if (myRes.settings) {
-        myLoadedSettings_ = {
-          retentionDays: Number(myRes.settings.retentionDays) || 30,
-          quotaLimitSec: Number(myRes.settings.quotaLimitSec) || 5400
-        };
-        document.getElementById('myInputRetention').value = myLoadedSettings_.retentionDays;
-        document.getElementById('myRetentionDisplay').innerText = myLoadedSettings_.retentionDays;
-        document.getElementById('myInputQuota').value = myLoadedSettings_.quotaLimitSec;
-        myCheckSettingsDirtyState_();
-      }
-
-      if (myRes.lastSync) {
-        document.getElementById('myStatusSubtitle').innerText = 'Ostatnia synchronizacja: ' + new Date(myRes.lastSync).toLocaleString('pl-PL');
-      }
+      myRenderFromLocalCache_(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
     } catch (myErr) {
-      console.error('Error loading dashboard:', myErr);
-      document.getElementById('myStatusSubtitle').innerText = 'Błąd odczytu danych: ' + myErr.message;
+      console.error('Error bootstrapping initial dataset:', myErr);
+      document.getElementById('myStatusSubtitle').innerText = 'Błąd pobierania bazy: ' + myErr.message;
+    } finally {
+      mySetDashboardLoadingState_(false);
     }
+  }
+
+  /**
+   * Load dashboard data. Uses local memory cache if present, otherwise bootstraps initial dataset.
+   * @param {string} myFromIso - Start ISO timestamp.
+   * @param {string} myToIso - End ISO timestamp.
+   * @param {string} [myResolution] - Resolution code.
+   */
+  async function myLoadDashboard(myFromIso, myToIso, myResolution) {
+    if (myCachedProcesses_ && myCachedProcesses_.length > 0) {
+      await myEnsureFreshnessAndRender_(myFromIso, myToIso, myResolution);
+      return;
+    }
+    await myBootstrapInitialDataset_(myFromIso, myToIso, myResolution);
   }
 
   /**
@@ -745,25 +1207,16 @@
     mySpinnerText.innerText = 'Pobieranie procesów...';
 
     try {
-      const myRes = await myCallServer(
-        'myApiTriggerManualSync',
-        myGlobalFromIso,
-        myGlobalToIso,
-        myGlobalResolution
-      );
-      const myEffectiveRes = myRes.dashboard.effectiveResolution || '1d';
-      const myChartTitle = document.getElementById('myChartSectionTitle');
-      if (myChartTitle) {
-        myChartTitle.innerText = 'Miks zużycia kwoty wyzwalaczy per projekt (ziarnistość: ' + myEffectiveRes + ')';
+      const myRes = await myCallServer('myApiTriggerManualSync');
+      myCachedProcesses_ = myRes.processes || [];
+      if (myRes.settings) {
+        mySettings_ = myRes.settings;
       }
+      myClientLastSync_ = myRes.lastCollectionTime || myRes.lastSync || '';
+      myUpdateCachedMaxTime_();
+      mySaveProcessesToStorage_();
 
-      myRenderKpis(myRes.dashboard.summary);
-      myRenderDailyChart(myRes.dashboard.dailySeries);
-      myRenderProjectsShareChart(myRes.dashboard.projects);
-      myRenderProjectsTable(myRes.dashboard.projects);
-      if (myRes.lastSync) {
-        document.getElementById('myStatusSubtitle').innerText = 'Ostatnia synchronizacja: ' + new Date(myRes.lastSync).toLocaleString('pl-PL');
-      }
+      myRenderFromLocalCache_(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
     } catch (myErr) {
       alert('Błąd synchronizacji: ' + myErr.message);
     } finally {
@@ -848,12 +1301,20 @@
   // Initial load
   document.addEventListener('DOMContentLoaded', function () {
     myInitDatetimeWheelScrubbing_();
-    const myHasRestored = myRestoreViewState_();
-    if (myHasRestored) {
-      myLoadDashboard(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
-    } else {
-      myLoadDashboard('', '', 'auto');
+    const myHasCachedData = myRestoreProcessesFromStorage_();
+    const myHasRestoredView = myRestoreViewState_();
+    if (!myHasRestoredView) {
+      mySetTimeWindowPreset(30);
     }
+    if (myHasCachedData) {
+      myPruneClientExpiredRows_();
+      if (myCachedProcesses_.length > 0) {
+        myRenderFromLocalCache_(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
+        myEnsureFreshnessAndRender_(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
+        return;
+      }
+    }
+    myBootstrapInitialDataset_(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
   });
 
 </script>

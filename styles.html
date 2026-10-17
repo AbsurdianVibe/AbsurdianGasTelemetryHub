@@ -370,6 +370,44 @@
     display: inline-block;
   }
 
+  /* Fullscreen Loading Overlay */
+  .my-loading-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(15, 23, 42, 0.75);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 14px;
+    z-index: 9999;
+  }
+
+  .my-loading-overlay.my-active {
+    display: flex;
+  }
+
+  .my-loading-spinner {
+    width: 38px;
+    height: 38px;
+    border: 3px solid var(--my-border);
+    border-top-color: var(--my-accent);
+    border-radius: 50%;
+    animation: mySpin 0.8s linear infinite;
+  }
+
+  .my-loading-text {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--my-text-primary);
+  }
+
+
   .my-view {
     display: none;
   }

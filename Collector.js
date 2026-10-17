@@ -56,15 +56,30 @@ function myRunCollector() {
     }
 
     const myPrunedCount = myPruneExpiredRows(mySettings.retentionDays);
+    const myCollectionTimeIso = new Date().toISOString();
+    PropertiesService.getScriptProperties().setProperty(
+      MY_PROP_KEYS.LAST_COLLECTION_TIME,
+      myCollectionTimeIso
+    );
 
     return {
       success: true,
       fetchedCount: myRawProcesses.length,
       savedCount: myAddedCount,
       prunedCount: myPrunedCount,
-      cursor: myGetCursor()
+      cursor: myGetCursor(),
+      lastCollectionTime: myCollectionTimeIso
     };
   } finally {
     myLock.releaseLock();
   }
 }
+
+/**
+ * Get timestamp of last telemetry collection from Script Properties.
+ * @return {string} ISO timestamp or empty string.
+ */
+function myGetLastCollectionTime() {
+  return PropertiesService.getScriptProperties().getProperty(MY_PROP_KEYS.LAST_COLLECTION_TIME) || '';
+}
+

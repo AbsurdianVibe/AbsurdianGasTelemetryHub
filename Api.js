@@ -51,18 +51,65 @@ function myApiGetDashboardData(myFromIso, myToIso, myResolution) {
 }
 
 /**
- * Trigger manual telemetry synchronization.
- * @param {string} myFromIso - Start ISO timestamp.
- * @param {string} myToIso - End ISO timestamp.
- * @param {string} [myResolution] - Target resolution.
- * @return {Object} Updated dashboard data.
+ * Ultra-fast check of telemetry freshness using Script Properties.
+ * @param {string} myClientLastSyncIso - Client last known collection timestamp.
+ * @return {{ isStale: boolean, serverLastSync: string }} Freshness status.
  */
-function myApiTriggerManualSync(myFromIso, myToIso, myResolution) {
+function myApiCheckTelemetryFreshness(myClientLastSyncIso) {
   myAssertOwner_();
-  myRunCollector();
-  return myApiGetDashboardData(myFromIso, myToIso, myResolution);
+  const myServerLast = myGetLastCollectionTime();
+  const myServerMs = myServerLast ? new Date(myServerLast).getTime() : 0;
+  const myClientMs = myClientLastSyncIso ? new Date(myClientLastSyncIso).getTime() : 0;
+
+  return {
+    isStale: myServerMs > myClientMs,
+    serverLastSync: myServerLast
+  };
 }
 
+/**
+ * Get initial full dataset within retention window and settings.
+ * @return {Object} Full dataset payload.
+ */
+function myApiGetInitialDataset() {
+  myAssertOwner_();
+  const mySettings = myGetSettings();
+  const myCutoffIso = myGetDateNDaysAgo(mySettings.retentionDays || MY_DEFAULT_RETENTION_DAYS);
+  const myRows = myReadProcessesRange(myCutoffIso, '');
+
+  return {
+    processes: myRows,
+    settings: mySettings,
+    lastSync: myGetCursor(),
+    lastCollectionTime: myGetLastCollectionTime(),
+    retentionCutoff: myCutoffIso
+  };
+}
+
+/**
+ * Get only new processes appended after given timestamp.
+ * @param {string} mySinceIso - Timestamp threshold.
+ * @return {Object} Delta payload.
+ */
+function myApiGetDeltaProcesses(mySinceIso) {
+  myAssertOwner_();
+  const myRows = myReadProcessesSince(mySinceIso);
+  return {
+    delta: myRows,
+    lastSync: myGetCursor(),
+    lastCollectionTime: myGetLastCollectionTime()
+  };
+}
+
+/**
+ * Trigger manual telemetry synchronization and return refreshed initial dataset.
+ * @return {Object} Updated full dataset.
+ */
+function myApiTriggerManualSync() {
+  myAssertOwner_();
+  myRunCollector();
+  return myApiGetInitialDataset();
+}
 
 /**
  * Update application settings.
@@ -73,3 +120,4 @@ function myApiUpdateSettings(myPatch) {
   myAssertOwner_();
   return mySaveSettings(myPatch);
 }
+

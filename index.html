@@ -58,7 +58,7 @@
         <button type="button" class="my-pill-btn" id="myPresetBtn1d" onclick="mySetTimeWindowPreset(1)">24h</button>
         <button type="button" class="my-pill-btn" id="myPresetBtn7d" onclick="mySetTimeWindowPreset(7)">7 dni</button>
         <button type="button" class="my-pill-btn my-active-preset" id="myPresetBtn30d" onclick="mySetTimeWindowPreset(30)">30 dni</button>
-        <button type="button" class="my-pill-btn" id="myPresetBtn180d" onclick="mySetTimeWindowPreset(180)">Wszystko</button>
+        <button type="button" class="my-pill-btn" id="myPresetBtnAll" onclick="mySetTimeWindowPreset('all')">Wszystko</button>
       </div>
       <div class="my-time-resolutions" aria-label="Wybór rozdzielczości czasowej">
         <span class="my-kpi-sub" style="margin-right: 4px;">Rozdzielczość:</span>
@@ -183,6 +183,12 @@
         </div>
       </div>
     </section>
+  </div>
+
+  <!-- Loading Overlay -->
+  <div id="myDashboardLoadingOverlay" class="my-loading-overlay">
+    <div class="my-loading-spinner"></div>
+    <div class="my-loading-text" id="myDashboardLoadingText">Inicjalizacja i pobieranie bazy procesów...</div>
   </div>
 
   <?!= myInclude('app.js'); ?>
