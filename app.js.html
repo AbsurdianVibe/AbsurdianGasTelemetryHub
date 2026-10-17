@@ -98,45 +98,50 @@
     document.getElementById('myKpiFailureRateSub').innerText = mySummary.totalFailures + ' awarii / timeoutów';
   }
 
+  const MY_CHART_COLOR_PALETTE = Object.freeze([
+    { fill: 'hsla(217, 91%, 60%, 0.45)', border: 'hsl(217, 91%, 60%)' },
+    { fill: 'hsla(142, 71%, 45%, 0.45)', border: 'hsl(142, 71%, 45%)' },
+    { fill: 'hsla(260, 80%, 65%, 0.45)', border: 'hsl(260, 80%, 65%)' },
+    { fill: 'hsla(38, 92%, 50%, 0.45)', border: 'hsl(38, 92%, 50%)' },
+    { fill: 'hsla(330, 80%, 60%, 0.45)', border: 'hsl(330, 80%, 60%)' },
+    { fill: 'hsla(180, 70%, 45%, 0.45)', border: 'hsl(180, 70%, 45%)' }
+  ]);
+
   /**
-   * Render daily quota usage stacked area chart using Chart.js.
-   * @param {Array<Object>} myDailySeries - Daily quota points.
+   * Render stacked area time-series chart for project metrics.
+   * @param {string} myCanvasId - Canvas element ID.
+   * @param {Object|null} myExistingInstance - Existing Chart.js instance.
+   * @param {Array<Object>} myDailySeries - Time bucket series.
+   * @param {string} myProjectFieldKey - Field in bucket holding project map.
+   * @return {Object|null} New Chart.js instance.
    */
-  function myRenderDailyChart(myDailySeries) {
-    const myCanvas = document.getElementById('myChartDailyQuota');
-    if (!myCanvas) return;
+  function myRenderStackedTimeSeriesChart_(myCanvasId, myExistingInstance, myDailySeries, myProjectFieldKey) {
+    const myCanvas = document.getElementById(myCanvasId);
+    if (!myCanvas) return null;
     const myCtx = myCanvas.getContext('2d');
 
-    if (myDailyQuotaChartInstance) {
-      myDailyQuotaChartInstance.destroy();
+    if (myExistingInstance) {
+      myExistingInstance.destroy();
     }
 
     const myLabels = myDailySeries.map(function (d) { return d.dayKey || d.bucketKey; });
 
     const myProjectNames = [];
     myDailySeries.forEach(function (myDay) {
-      if (!myDay.byProject) return;
-      Object.keys(myDay.byProject).forEach(function (myP) {
+      const myMap = myDay[myProjectFieldKey];
+      if (!myMap) return;
+      Object.keys(myMap).forEach(function (myP) {
         if (myProjectNames.indexOf(myP) === -1) {
           myProjectNames.push(myP);
         }
       });
     });
 
-    const myColorPalette = [
-      { fill: 'hsla(217, 91%, 60%, 0.45)', border: 'hsl(217, 91%, 60%)' },
-      { fill: 'hsla(142, 71%, 45%, 0.45)', border: 'hsl(142, 71%, 45%)' },
-      { fill: 'hsla(260, 80%, 65%, 0.45)', border: 'hsl(260, 80%, 65%)' },
-      { fill: 'hsla(38, 92%, 50%, 0.45)', border: 'hsl(38, 92%, 50%)' },
-      { fill: 'hsla(330, 80%, 60%, 0.45)', border: 'hsl(330, 80%, 60%)' },
-      { fill: 'hsla(180, 70%, 45%, 0.45)', border: 'hsl(180, 70%, 45%)' }
-    ];
-
     const myDatasets = myProjectNames.map(function (myProjName, myIdx) {
-      const myColor = myColorPalette[myIdx % myColorPalette.length];
+      const myColor = MY_CHART_COLOR_PALETTE[myIdx % MY_CHART_COLOR_PALETTE.length];
       const myData = myDailySeries.map(function (myDay) {
-        return (myDay.byProject && myDay.byProject[myProjName]) ?
-          Number(myDay.byProject[myProjName].toFixed(1)) : 0;
+        const myMap = myDay[myProjectFieldKey];
+        return (myMap && myMap[myProjName]) ? Number(myMap[myProjName].toFixed(1)) : 0;
       });
 
       return {
@@ -164,7 +169,7 @@
       });
     }
 
-    myDailyQuotaChartInstance = new Chart(myCtx, {
+    return new Chart(myCtx, {
       type: 'line',
       data: {
         labels: myLabels,
@@ -222,50 +227,29 @@
   }
 
   /**
-   * Render projects duration share doughnut chart.
-   * @param {Array<Object>} myProjects - Projects breakdown.
+   * Render daily quota usage stacked area chart using Chart.js.
+   * @param {Array<Object>} myDailySeries - Daily quota points.
    */
-  function myRenderProjectsShareChart(myProjects) {
-    const myCanvas = document.getElementById('myChartProjectsShare');
-    if (!myCanvas) return;
-    const myCtx = myCanvas.getContext('2d');
+  function myRenderDailyChart(myDailySeries) {
+    myDailyQuotaChartInstance = myRenderStackedTimeSeriesChart_(
+      'myChartDailyQuota',
+      myDailyQuotaChartInstance,
+      myDailySeries,
+      'byProject'
+    );
+  }
 
-    if (myProjectsShareChartInstance) {
-      myProjectsShareChartInstance.destroy();
-    }
-
-    const myLabels = myProjects.map(function (p) { return p.projectName; });
-    const myDataPoints = myProjects.map(function (p) { return p.totalSec; });
-    const myColors = [
-      'hsl(217, 91%, 60%)',
-      'hsl(142, 71%, 45%)',
-      'hsl(38, 92%, 50%)',
-      'hsl(260, 80%, 65%)',
-      'hsl(330, 80%, 60%)',
-      'hsl(180, 70%, 45%)'
-    ];
-
-    myProjectsShareChartInstance = new Chart(myCtx, {
-      type: 'doughnut',
-      data: {
-        labels: myLabels,
-        datasets: [{
-          data: myDataPoints,
-          backgroundColor: myColors.slice(0, myLabels.length),
-          borderWidth: 0
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {
-          legend: {
-            position: 'bottom',
-            labels: { color: 'hsl(215, 20%, 65%)', font: { size: 11 }, boxWidth: 12 }
-          }
-        }
-      }
-    });
+  /**
+   * Render projects duration share stacked area chart using Chart.js.
+   * @param {Array<Object>} myDailySeries - Daily series with byProjectTotal.
+   */
+  function myRenderProjectsShareChart(myDailySeries) {
+    myProjectsShareChartInstance = myRenderStackedTimeSeriesChart_(
+      'myChartProjectsShare',
+      myProjectsShareChartInstance,
+      myDailySeries,
+      'byProjectTotal'
+    );
   }
 
   /**
@@ -574,6 +558,7 @@
 
     myAppliedFromInputValue_ = myFromVal;
     myAppliedToInputValue_ = myToVal;
+    myUpdateTimeWindowInputBounds_();
     myCheckTimeWindowDirtyState_();
 
     myHighlightPresetBtn_(myDaysCount);
@@ -583,6 +568,85 @@
     mySaveViewState_();
 
     myLoadDashboard(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
+  }
+
+  /**
+   * Clamp date between lower and upper bounds.
+   * @param {Date} myTargetDate - Target date.
+   * @param {Date} myMinDate - Lower bound.
+   * @param {Date} myMaxDate - Upper bound.
+   * @return {Date} Clamped date.
+   */
+  function myClampDate_(myTargetDate, myMinDate, myMaxDate) {
+    const myTargetMs = myTargetDate.getTime();
+    if (myTargetMs < myMinDate.getTime()) return new Date(myMinDate.getTime());
+    if (myTargetMs > myMaxDate.getTime()) return new Date(myMaxDate.getTime());
+    return myTargetDate;
+  }
+
+  /**
+   * Update min and max boundary constraints for datetime inputs based on retention and current time.
+   */
+  function myUpdateTimeWindowInputBounds_() {
+    const myFromEl = document.getElementById('myInputTimeFrom');
+    const myToEl = document.getElementById('myInputTimeTo');
+    if (!myFromEl || !myToEl) return;
+
+    const myRetention = (mySettings_ && mySettings_.retentionDays) ? Number(mySettings_.retentionDays) : 30;
+    const myNow = new Date();
+    const myMinDate = new Date(myNow.getTime() - (myRetention * 86400000));
+    const myMinStr = myToDatetimeInputValue(myMinDate);
+    const myMaxStr = myToDatetimeInputValue(myNow);
+
+    myFromEl.min = myMinStr;
+    myFromEl.max = myMaxStr;
+    myToEl.min = myMinStr;
+    myToEl.max = myMaxStr;
+  }
+
+  /**
+   * Validate and clamp input values to allowable bounds.
+   * @param {HTMLInputElement} [myActiveInputEl] - Input being edited if any.
+   */
+  function myValidateAndClampInputs_(myActiveInputEl) {
+    const myFromEl = document.getElementById('myInputTimeFrom');
+    const myToEl = document.getElementById('myInputTimeTo');
+    if (!myFromEl || !myToEl) return;
+
+    const myNow = new Date();
+    const myRetention = (mySettings_ && mySettings_.retentionDays) ? Number(mySettings_.retentionDays) : 30;
+    const myMinRetentionDate = new Date(myNow.getTime() - (myRetention * 86400000));
+
+    let myFromDate = myFromEl.value ? new Date(myFromEl.value) : null;
+    let myToDate = myToEl.value ? new Date(myToEl.value) : null;
+
+    if (myToDate) {
+      if (isNaN(myToDate.getTime()) || myToDate.getTime() > myNow.getTime()) {
+        myToDate = new Date(myNow);
+      } else if (myToDate.getTime() < myMinRetentionDate.getTime()) {
+        myToDate = new Date(myMinRetentionDate);
+      }
+      myToEl.value = myToDatetimeInputValue(myToDate);
+    }
+
+    if (myFromDate) {
+      if (isNaN(myFromDate.getTime()) || myFromDate.getTime() < myMinRetentionDate.getTime()) {
+        myFromDate = new Date(myMinRetentionDate);
+      } else if (myFromDate.getTime() > myNow.getTime()) {
+        myFromDate = new Date(myNow);
+      }
+      myFromEl.value = myToDatetimeInputValue(myFromDate);
+    }
+
+    if (myFromDate && myToDate && myFromDate.getTime() > myToDate.getTime()) {
+      if (myActiveInputEl && myActiveInputEl.id === 'myInputTimeFrom') {
+        myToEl.value = myFromEl.value;
+      } else {
+        myFromEl.value = myToEl.value;
+      }
+    }
+
+    myUpdateTimeWindowInputBounds_();
   }
 
   /**
@@ -620,6 +684,8 @@
    * Read time window inputs and apply global filter.
    */
   function myApplyTimeWindow() {
+    myValidateAndClampInputs_();
+
     const myFromVal = document.getElementById('myInputTimeFrom').value;
     const myToVal = document.getElementById('myInputTimeTo').value;
 
@@ -748,7 +814,31 @@
     const myStep = (myEvt.shiftKey && mySegmentData.segment === 'minute') ? 5 : 1;
     const myDelta = (myEvt.deltaY < 0 ? 1 : -1) * myStep;
 
-    const myNextDate = myAdjustDateBySegment_(myCurrDate, mySegmentData.segment, myDelta);
+    const myUnclampedDate = myAdjustDateBySegment_(myCurrDate, mySegmentData.segment, myDelta);
+
+    const myNow = new Date();
+    const myRetention = (mySettings_ && mySettings_.retentionDays) ? Number(mySettings_.retentionDays) : 30;
+    const myMinRetentionDate = new Date(myNow.getTime() - (myRetention * 86400000));
+
+    let myMinBound = myMinRetentionDate;
+    let myMaxBound = myNow;
+
+    const myFromEl = document.getElementById('myInputTimeFrom');
+    const myToEl = document.getElementById('myInputTimeTo');
+
+    if (myInputEl.id === 'myInputTimeFrom') {
+      if (myToEl && myToEl.value) {
+        const myToDate = new Date(myToEl.value);
+        if (!isNaN(myToDate.getTime())) myMaxBound = myToDate;
+      }
+    } else if (myInputEl.id === 'myInputTimeTo') {
+      if (myFromEl && myFromEl.value) {
+        const myFromDate = new Date(myFromEl.value);
+        if (!isNaN(myFromDate.getTime())) myMinBound = myFromDate;
+      }
+    }
+
+    const myNextDate = myClampDate_(myUnclampedDate, myMinBound, myMaxBound);
     myInputEl.value = myToDatetimeInputValue(myNextDate);
 
     myInputEl.title = 'Kółko myszy: ' + mySegmentData.label;
@@ -788,7 +878,14 @@
       });
 
       myEl.addEventListener('input', myCheckTimeWindowDirtyState_);
-      myEl.addEventListener('change', myCheckTimeWindowDirtyState_);
+      myEl.addEventListener('change', function () {
+        myValidateAndClampInputs_(myEl);
+        myCheckTimeWindowDirtyState_();
+      });
+      myEl.addEventListener('blur', function () {
+        myValidateAndClampInputs_(myEl);
+        myCheckTimeWindowDirtyState_();
+      });
     });
   }
 
@@ -913,7 +1010,8 @@
               triggerSec: 0,
               totalSec: 0,
               count: 0,
-              byProject: {}
+              byProject: {},
+              byProjectTotal: {}
             };
           }
         }
@@ -947,11 +1045,14 @@
             triggerSec: 0,
             totalSec: 0,
             count: 0,
-            byProject: {}
+            byProject: {},
+            byProjectTotal: {}
           };
         }
         mySeriesBuckets[myBucketKey].totalSec += myRow.durationSec;
         mySeriesBuckets[myBucketKey].count++;
+        mySeriesBuckets[myBucketKey].byProjectTotal[myRow.projectName] =
+          (mySeriesBuckets[myBucketKey].byProjectTotal[myRow.projectName] || 0) + myRow.durationSec;
         if (myIsQuotaType) {
           mySeriesBuckets[myBucketKey].triggerSec += myRow.durationSec;
           mySeriesBuckets[myBucketKey].byProject[myRow.projectName] =
@@ -1030,7 +1131,8 @@
         totalSec: Number(myItem.totalSec.toFixed(1)),
         count: myItem.count,
         percentUsed: Number(((myItem.triggerSec / myQuotaLimitSec) * 100).toFixed(1)),
-        byProject: myItem.byProject
+        byProject: myItem.byProject,
+        byProjectTotal: myItem.byProjectTotal
       };
     });
 
@@ -1071,10 +1173,14 @@
     if (myChartTitle) {
       myChartTitle.innerText = 'Miks zużycia kwoty wyzwalaczy per projekt (ziarnistość: ' + myAggregated.effectiveResolution + ')';
     }
+    const myShareTitle = document.getElementById('myChartProjectsShareTitle');
+    if (myShareTitle) {
+      myShareTitle.innerText = 'Udział projektów w czasie wykonania (ziarnistość: ' + myAggregated.effectiveResolution + ')';
+    }
 
     myRenderKpis(myAggregated.summary);
     myRenderDailyChart(myAggregated.dailySeries);
-    myRenderProjectsShareChart(myAggregated.projects);
+    myRenderProjectsShareChart(myAggregated.dailySeries);
     myRenderProjectsTable(myAggregated.projects);
 
     if (myClientLastSync_) {
@@ -1150,6 +1256,7 @@
         if (myRetEl) myRetEl.value = myLoadedSettings_.retentionDays;
         if (myRetDisp) myRetDisp.innerText = myLoadedSettings_.retentionDays;
         if (myQuotaEl) myQuotaEl.value = myLoadedSettings_.quotaLimitSec;
+        myUpdateTimeWindowInputBounds_();
         myCheckSettingsDirtyState_();
       }
       myClientLastSync_ = myRes.lastCollectionTime || myRes.lastSync || '';
@@ -1287,6 +1394,8 @@
         retentionDays: myRetention,
         quotaLimitSec: myQuota
       };
+      myUpdateTimeWindowInputBounds_();
+      myValidateAndClampInputs_();
       myCheckSettingsDirtyState_();
       alert('Ustawienia zapisane pomyślnie.');
       myLoadDashboard(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
@@ -1306,6 +1415,8 @@
     if (!myHasRestoredView) {
       mySetTimeWindowPreset(30);
     }
+    myUpdateTimeWindowInputBounds_();
+    myValidateAndClampInputs_();
     if (myHasCachedData) {
       myPruneClientExpiredRows_();
       if (myCachedProcesses_.length > 0) {

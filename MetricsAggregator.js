@@ -87,7 +87,8 @@ function myAggregateDataset(myRows, myQuotaLimitSec, myTz, myFromIso, myToIso, m
             triggerSec: 0,
             totalSec: 0,
             count: 0,
-            byProject: {}
+            byProject: {},
+            byProjectTotal: {}
           };
         }
       }
@@ -118,11 +119,14 @@ function myAggregateDataset(myRows, myQuotaLimitSec, myTz, myFromIso, myToIso, m
           triggerSec: 0,
           totalSec: 0,
           count: 0,
-          byProject: {}
+          byProject: {},
+          byProjectTotal: {}
         };
       }
       mySeriesBuckets[myBucketKey].totalSec += myRow.durationSec;
       mySeriesBuckets[myBucketKey].count++;
+      mySeriesBuckets[myBucketKey].byProjectTotal[myRow.projectName] =
+        (mySeriesBuckets[myBucketKey].byProjectTotal[myRow.projectName] || 0) + myRow.durationSec;
       if (myIsQuotaType) {
         mySeriesBuckets[myBucketKey].triggerSec += myRow.durationSec;
         mySeriesBuckets[myBucketKey].byProject[myRow.projectName] =
@@ -185,7 +189,8 @@ function myAggregateDataset(myRows, myQuotaLimitSec, myTz, myFromIso, myToIso, m
       totalSec: Number(myItem.totalSec.toFixed(1)),
       count: myItem.count,
       percentUsed: Number(((myItem.triggerSec / myQuotaLimitSec) * 100).toFixed(1)),
-      byProject: myItem.byProject
+      byProject: myItem.byProject,
+      byProjectTotal: myItem.byProjectTotal
     };
   });
 
