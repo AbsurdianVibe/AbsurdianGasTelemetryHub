@@ -364,6 +364,7 @@
         myCachedProcesses_ = JSON.parse(myRaw);
         myClientLastSync_ = mySync || '';
         myUpdateCachedMaxTime_();
+        myUpdateSyncStatusDisplay_(myClientLastSync_);
         return myCachedProcesses_.length > 0;
       }
     } catch (myErr) {
@@ -1156,6 +1157,26 @@
   }
 
   /**
+   * Update sync status display below manual sync button.
+   * @param {string} [myTimestampIso] - ISO timestamp of last sync.
+   * @param {string} [myErrorMessage] - Optional error message to display.
+   */
+  function myUpdateSyncStatusDisplay_(myTimestampIso, myErrorMessage) {
+    const myStatusEl = document.getElementById('mySyncStatus');
+    if (!myStatusEl) return;
+    if (myErrorMessage) {
+      myStatusEl.innerHTML = 'Ostatnia synchronizacja:<br><span style="color: var(--my-danger);">' + myErrorMessage + '</span>';
+      return;
+    }
+    if (myTimestampIso) {
+      const myDateStr = new Date(myTimestampIso).toLocaleString('pl-PL');
+      myStatusEl.innerHTML = 'Ostatnia synchronizacja:<br><span>' + myDateStr + '</span>';
+      return;
+    }
+    myStatusEl.innerHTML = 'Ostatnia synchronizacja:<br><span style="color: var(--my-text-muted);">Brak danych</span>';
+  }
+
+  /**
    * Render dashboard views using local in-memory dataset in 0 ms.
    * @param {string} myFromIso - Start ISO.
    * @param {string} myToIso - End ISO.
@@ -1178,14 +1199,19 @@
       myShareTitle.innerText = 'Udział projektów w czasie wykonania (ziarnistość: ' + myAggregated.effectiveResolution + ')';
     }
 
+    const myDailyQuotaLimitBadge = document.getElementById('myChartDailyQuotaLimitBadge');
+    if (myDailyQuotaLimitBadge) {
+      const myLimitSec = (myLoadedSettings_ && myLoadedSettings_.quotaLimitSec) || (mySettings_ && mySettings_.quotaLimitSec) || 5400;
+      const myLimitMin = Math.round(myLimitSec / 60);
+      myDailyQuotaLimitBadge.innerText = 'Limit GAS: ' + myLimitMin + 'm / doba (' + myLimitSec + 's)';
+    }
+
     myRenderKpis(myAggregated.summary);
     myRenderDailyChart(myAggregated.dailySeries);
     myRenderProjectsShareChart(myAggregated.dailySeries);
     myRenderProjectsTable(myAggregated.projects);
 
-    if (myClientLastSync_) {
-      document.getElementById('myStatusSubtitle').innerText = 'Ostatnia synchronizacja: ' + new Date(myClientLastSync_).toLocaleString('pl-PL');
-    }
+    myUpdateSyncStatusDisplay_(myClientLastSync_);
   }
 
   /**
@@ -1282,7 +1308,7 @@
       myRenderFromLocalCache_(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
     } catch (myErr) {
       console.error('Error bootstrapping initial dataset:', myErr);
-      document.getElementById('myStatusSubtitle').innerText = 'Błąd pobierania bazy: ' + myErr.message;
+      myUpdateSyncStatusDisplay_(null, 'Błąd pobierania: ' + myErr.message);
     } finally {
       mySetDashboardLoadingState_(false);
     }

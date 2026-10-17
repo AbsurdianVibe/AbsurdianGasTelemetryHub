@@ -87,21 +87,27 @@
     color: var(--my-text-primary);
   }
 
-  .my-subtitle {
-    font-size: 13px;
-    color: var(--my-text-secondary);
-  }
-
   .my-actions {
     display: flex;
-    align-items: center;
-    gap: 12px;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+    min-width: 160px;
+  }
+
+  .my-sync-status {
+    font-size: 11px;
+    color: var(--my-text-secondary);
+    text-align: center;
+    line-height: 1.35;
+    user-select: none;
   }
 
   /* Buttons */
   .my-btn {
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     gap: 8px;
     background: var(--my-accent);
     color: #ffffff;
@@ -259,6 +265,19 @@
     color: var(--my-text-primary);
   }
 
+  .my-chart-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+
+  .my-chart-header .my-section-title {
+    margin-bottom: 0;
+  }
+
   .my-chart-wrapper {
     position: relative;
     height: 280px;
@@ -314,6 +333,12 @@
   .my-badge-danger {
     background: hsla(0, 84%, 60%, 0.15);
     color: var(--my-danger);
+  }
+
+  .my-badge-neutral {
+    background: var(--my-bg-surface);
+    color: var(--my-text-secondary);
+    border: 1px solid var(--my-border);
   }
 
   /* Form Elements */

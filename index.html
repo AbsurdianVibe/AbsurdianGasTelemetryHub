@@ -18,7 +18,6 @@
         <div class="my-brand-icon">Δ</div>
         <div>
           <h1 class="my-title">AbsurdianGasTelemetryHub</h1>
-          <p class="my-subtitle" id="myStatusSubtitle">Centralny audyt telemetryczny GAS</p>
         </div>
       </div>
       <div class="my-actions">
@@ -26,6 +25,9 @@
           <span class="my-spinner" id="mySyncSpinner"></span>
           <span id="mySyncBtnText">Synchronizuj teraz</span>
         </button>
+        <div class="my-sync-status" id="mySyncStatus">
+          Ostatnia synchronizacja:<br><span style="color: var(--my-text-muted);">Brak danych</span>
+        </div>
       </div>
     </header>
 
@@ -116,14 +118,20 @@
       <!-- Charts Section -->
       <section class="my-section-grid">
         <div class="my-card">
-          <h2 class="my-section-title" id="myChartSectionTitle">Miks zużycia kwoty wyzwalaczy per projekt (minuty:sekundy)</h2>
+          <div class="my-chart-header">
+            <h2 class="my-section-title" id="myChartSectionTitle">Miks zużycia kwoty wyzwalaczy per projekt (minuty:sekundy)</h2>
+            <span class="my-badge my-badge-neutral" id="myChartDailyQuotaLimitBadge" title="Łączny dobowy limit czasu wykonania wyzwalaczy (Triggers total runtime). 90m (Consumer) / 6h (Workspace).">Limit GAS: 90m / doba (5400s)</span>
+          </div>
           <div class="my-chart-wrapper">
             <canvas id="myChartDailyQuota"></canvas>
           </div>
         </div>
 
         <div class="my-card">
-          <h2 class="my-section-title" id="myChartProjectsShareTitle">Udział projektów w czasie wykonania (minuty:sekundy)</h2>
+          <div class="my-chart-header">
+            <h2 class="my-section-title" id="myChartProjectsShareTitle">Udział projektów w czasie wykonania (minuty:sekundy)</h2>
+            <span class="my-badge my-badge-neutral" id="myChartProjectsShareLimitBadge" title="Maksymalny dopuszczalny czas trwania pojedynczego wykonania skryptu (Maximum execution time).">Limit GAS: maks. 6 min (360s) / wykonanie</span>
+          </div>
           <div class="my-chart-wrapper">
             <canvas id="myChartProjectsShare"></canvas>
           </div>
