@@ -78,14 +78,23 @@
    * @param {Object} mySummary - Summary metrics object.
    */
   function myRenderKpis(mySummary) {
-    const myQuotaPct = mySummary.todayQuotaPercent || 0;
+    const myQuotaPct = (typeof mySummary.lastFullDayQuotaPercent !== 'undefined') ?
+      mySummary.lastFullDayQuotaPercent : (mySummary.todayQuotaPercent || 0);
+    const myQuotaSec = (typeof mySummary.lastFullDayQuotaSec !== 'undefined') ?
+      mySummary.lastFullDayQuotaSec : (mySummary.todayQuotaSec || 0);
+    const myDayKey = mySummary.lastFullDayKey || '';
+
     const myQuotaBadge = document.getElementById('myKpiQuotaBadge');
     const myQuotaVal = document.getElementById('myKpiQuotaVal');
     const myQuotaBar = document.getElementById('myKpiQuotaBar');
+    const myQuotaSub = document.getElementById('myKpiQuotaSub');
 
-    myQuotaVal.innerText = mySummary.todayQuotaSec + 's (' + myQuotaPct + '%)';
+    myQuotaVal.innerText = myQuotaSec + 's (' + myQuotaPct + '%)';
     myQuotaBadge.innerText = myQuotaPct + '%';
     myQuotaBar.style.width = Math.min(100, myQuotaPct) + '%';
+    if (myQuotaSub && myDayKey) {
+      myQuotaSub.innerText = 'Doba ' + myDayKey + ' • Limit: ' + mySummary.todayQuotaLimitSec + 's (90 min)';
+    }
 
     myQuotaBar.className = 'my-progress-fill';
     myQuotaBadge.className = 'my-badge';
@@ -1255,11 +1264,11 @@
     const mySeriesBuckets = {};
     let myTotalDurationSec = 0;
     let myTotalFailures = 0;
-    let myTodayTriggerSec = 0;
+    let myLastFullDayQuotaSec = 0;
 
     const myPad = function (n) { return n < 10 ? '0' + n : '' + n; };
-    const myNow = new Date();
-    const myTodayKey = myNow.getFullYear() + '-' + myPad(myNow.getMonth() + 1) + '-' + myPad(myNow.getDate());
+    const myYesterday = new Date(Date.now() - 86400000);
+    const myLastFullDayKey = myYesterday.getFullYear() + '-' + myPad(myYesterday.getMonth() + 1) + '-' + myPad(myYesterday.getDate());
 
     let myEffectiveResolution = myRequestedResolution;
     if (!myEffectiveResolution || myEffectiveResolution === 'auto') {
@@ -1291,8 +1300,8 @@
 
       const myRowDate = new Date(myRow.startTime);
       const myRowDay = myRowDate.getFullYear() + '-' + myPad(myRowDate.getMonth() + 1) + '-' + myPad(myRowDate.getDate());
-      if (myRowDay === myTodayKey && myIsQuotaType) {
-        myTodayTriggerSec += myRow.durationSec;
+      if (myRowDay === myLastFullDayKey && myIsQuotaType) {
+        myLastFullDayQuotaSec += myRow.durationSec;
       }
 
       if (myRowTimeMs < myFromMs || myRowTimeMs > myToMs) return;
@@ -1398,7 +1407,7 @@
       };
     });
 
-    const myTodayQuotaPercent = Number(((myTodayTriggerSec / myQuotaLimitSec) * 100).toFixed(1));
+    const myLastFullDayQuotaPercent = Number(((myLastFullDayQuotaSec / myQuotaLimitSec) * 100).toFixed(1));
 
     return {
       summary: {
@@ -1406,9 +1415,12 @@
         totalDurationSec: Number(myTotalDurationSec.toFixed(1)),
         totalFailures: myTotalFailures,
         failureRate: myFilteredCount > 0 ? Number(((myTotalFailures / myFilteredCount) * 100).toFixed(1)) : 0,
-        todayQuotaSec: Number(myTodayTriggerSec.toFixed(1)),
+        todayQuotaSec: Number(myLastFullDayQuotaSec.toFixed(1)),
         todayQuotaLimitSec: myQuotaLimitSec,
-        todayQuotaPercent: myTodayQuotaPercent
+        todayQuotaPercent: myLastFullDayQuotaPercent,
+        lastFullDayKey: myLastFullDayKey,
+        lastFullDayQuotaSec: Number(myLastFullDayQuotaSec.toFixed(1)),
+        lastFullDayQuotaPercent: myLastFullDayQuotaPercent
       },
       dailySeries: mySeriesList,
       resolution: myRequestedResolution || 'auto',

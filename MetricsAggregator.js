@@ -79,10 +79,11 @@ function myAggregateDataset(myRows, myQuotaLimitSec, myTz, myFromIso, myToIso, m
   const mySeriesBuckets = {};
   let myTotalDurationSec = 0;
   let myTotalFailures = 0;
-  let myTodayTriggerSec = 0;
+  let myLastFullDayQuotaSec = 0;
 
   const myTimezone = myTz || MY_DEFAULT_TIMEZONE;
-  const myTodayKey = myGetDayKey(new Date(), myTimezone);
+  const myYesterday = new Date(Date.now() - 86400000);
+  const myLastFullDayKey = myGetDayKey(myYesterday, myTimezone);
 
   let myEffectiveResolution = myRequestedResolution;
   if (!myEffectiveResolution || myEffectiveResolution === 'auto') {
@@ -114,10 +115,10 @@ function myAggregateDataset(myRows, myQuotaLimitSec, myTz, myFromIso, myToIso, m
     const myIsQuotaType = myRow.processType === MY_PROCESS_TYPE.TIME_DRIVEN ||
       myRow.processType === MY_PROCESS_TYPE.TRIGGER;
 
-    // Track today's quota independently of chart range
+    // Track last completed day quota independently of chart range
     const myRowDay = myGetDayKey(myRow.startTime, myTimezone);
-    if (myRowDay === myTodayKey && myIsQuotaType) {
-      myTodayTriggerSec += myRow.durationSec;
+    if (myRowDay === myLastFullDayKey && myIsQuotaType) {
+      myLastFullDayQuotaSec += myRow.durationSec;
     }
 
     // 1. Time-series bucket accumulation
@@ -201,7 +202,7 @@ function myAggregateDataset(myRows, myQuotaLimitSec, myTz, myFromIso, myToIso, m
     };
   });
 
-  const myTodayQuotaPercent = Number(((myTodayTriggerSec / myQuotaLimitSec) * 100).toFixed(1));
+  const myLastFullDayQuotaPercent = Number(((myLastFullDayQuotaSec / myQuotaLimitSec) * 100).toFixed(1));
 
   return {
     summary: {
@@ -209,9 +210,12 @@ function myAggregateDataset(myRows, myQuotaLimitSec, myTz, myFromIso, myToIso, m
       totalDurationSec: Number(myTotalDurationSec.toFixed(1)),
       totalFailures: myTotalFailures,
       failureRate: myRows.length > 0 ? Number(((myTotalFailures / myRows.length) * 100).toFixed(1)) : 0,
-      todayQuotaSec: Number(myTodayTriggerSec.toFixed(1)),
+      todayQuotaSec: Number(myLastFullDayQuotaSec.toFixed(1)),
       todayQuotaLimitSec: myQuotaLimitSec,
-      todayQuotaPercent: myTodayQuotaPercent
+      todayQuotaPercent: myLastFullDayQuotaPercent,
+      lastFullDayKey: myLastFullDayKey,
+      lastFullDayQuotaSec: Number(myLastFullDayQuotaSec.toFixed(1)),
+      lastFullDayQuotaPercent: myLastFullDayQuotaPercent
     },
     dailySeries: mySeriesList,
     resolution: myRequestedResolution || 'auto',
