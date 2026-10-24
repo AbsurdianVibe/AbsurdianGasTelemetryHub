@@ -1,15 +1,18 @@
 <!DOCTYPE html>
 <html lang="pl">
+
 <head>
   <meta charset="UTF-8">
   <title>Absurdian Gas Telemetry Hub</title>
-  <meta name="description" content="Centralized execution telemetry and trigger quota monitoring dashboard for Google Apps Script.">
+  <meta name="description"
+    content="Centralized execution telemetry and trigger quota monitoring dashboard for Google Apps Script.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <?!= myInclude('styles'); ?>
 </head>
+
 <body>
   <div class="my-container">
     <!-- Main Header -->
@@ -42,16 +45,22 @@
     <aside id="myTimeWindowBar" class="my-time-window-bar" aria-label="Globalne sterowanie oknem czasowym">
       <div class="my-time-window-inputs">
         <span class="my-window-label">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10" />
+            <polyline points="12 6 12 12 16 14" />
+          </svg>
           Okno od:
         </span>
-        <input type="datetime-local" id="myInputTimeFrom" class="my-datetime-input" aria-label="Początek okna czasowego">
+        <input type="datetime-local" id="myInputTimeFrom" class="my-datetime-input"
+          aria-label="Początek okna czasowego">
         <span class="my-window-label">do:</span>
         <input type="datetime-local" id="myInputTimeTo" class="my-datetime-input" aria-label="Koniec okna czasowego">
-        <button id="myBtnApplyTimeWindow" class="my-btn" style="padding: 7px 14px; font-size: 13px;" onclick="myApplyTimeWindow()" disabled>
+        <button id="myBtnApplyTimeWindow" class="my-btn" style="padding: 7px 14px; font-size: 13px;"
+          onclick="myApplyTimeWindow()" disabled>
           Filtruj
         </button>
-        <button id="myBtnCancelTimeWindow" class="my-btn my-btn-secondary" style="padding: 7px 14px; font-size: 13px; display: none;" onclick="myCancelTimeWindow()">
+        <button id="myBtnCancelTimeWindow" class="my-btn my-btn-secondary"
+          style="padding: 7px 14px; font-size: 13px; display: none;" onclick="myCancelTimeWindow()">
           Anuluj
         </button>
       </div>
@@ -59,16 +68,21 @@
         <span class="my-kpi-sub" style="margin-right: 4px;">Szybki wybór:</span>
         <button type="button" class="my-pill-btn" id="myPresetBtn1d" onclick="mySetTimeWindowPreset(1)">24h</button>
         <button type="button" class="my-pill-btn" id="myPresetBtn7d" onclick="mySetTimeWindowPreset(7)">7 dni</button>
-        <button type="button" class="my-pill-btn my-active-preset" id="myPresetBtn30d" onclick="mySetTimeWindowPreset(30)">30 dni</button>
-        <button type="button" class="my-pill-btn" id="myPresetBtnAll" onclick="mySetTimeWindowPreset('all')">Wszystko</button>
+        <button type="button" class="my-pill-btn my-active-preset" id="myPresetBtn30d"
+          onclick="mySetTimeWindowPreset(30)">30 dni</button>
+        <button type="button" class="my-pill-btn" id="myPresetBtnAll"
+          onclick="mySetTimeWindowPreset('all')">Wszystko</button>
       </div>
       <div class="my-time-resolutions" aria-label="Wybór rozdzielczości czasowej">
         <span class="my-kpi-sub" style="margin-right: 4px;">Rozdzielczość:</span>
-        <button type="button" class="my-pill-btn my-res-btn my-active-preset" id="myResBtnAuto" onclick="mySetResolution('auto')">Auto</button>
+        <button type="button" class="my-pill-btn my-res-btn my-active-preset" id="myResBtnAuto"
+          onclick="mySetResolution('auto')">Auto</button>
         <button type="button" class="my-pill-btn my-res-btn" id="myResBtn1d" onclick="mySetResolution('1d')">1d</button>
         <button type="button" class="my-pill-btn my-res-btn" id="myResBtn1h" onclick="mySetResolution('1h')">1h</button>
-        <button type="button" class="my-pill-btn my-res-btn" id="myResBtn30m" onclick="mySetResolution('30m')">30m</button>
-        <button type="button" class="my-pill-btn my-res-btn" id="myResBtn15m" onclick="mySetResolution('15m')">15m</button>
+        <button type="button" class="my-pill-btn my-res-btn" id="myResBtn30m"
+          onclick="mySetResolution('30m')">30m</button>
+        <button type="button" class="my-pill-btn my-res-btn" id="myResBtn15m"
+          onclick="mySetResolution('15m')">15m</button>
         <button type="button" class="my-pill-btn my-res-btn" id="myResBtn5m" onclick="mySetResolution('5m')">5m</button>
         <button type="button" class="my-pill-btn my-res-btn" id="myResBtn1m" onclick="mySetResolution('1m')">1m</button>
       </div>
@@ -119,8 +133,16 @@
       <section class="my-section-grid">
         <div class="my-card">
           <div class="my-chart-header">
-            <h2 class="my-section-title" id="myChartSectionTitle">Miks zużycia kwoty wyzwalaczy per projekt (minuty:sekundy)</h2>
-            <span class="my-badge my-badge-neutral" id="myChartDailyQuotaLimitBadge" title="Łączny dobowy limit czasu wykonania wyzwalaczy (Triggers total runtime). 90m (Consumer) / 6h (Workspace).">Limit GAS: 90m / doba (5400s)</span>
+            <h2 class="my-section-title" id="myChartSectionTitle">Miks zużycia kwoty wyzwalaczy per projekt
+              (minuty:sekundy)</h2>
+            <div class="my-chart-header-actions">
+              <label class="my-chart-option"
+                title="Pokaż lub ukryj referencyjną linię dobowego limitu wyzwalaczy GAS (90 min / 5400s)">
+                <input type="checkbox" id="myToggleDailyQuotaLimitLine" checked>
+                <span class="my-limit-preview-dash" aria-hidden="true"></span>
+                <span id="myDailyQuotaLimitLabel">limit GAS (90m / 5400s)</span>
+              </label>
+            </div>
           </div>
           <div class="my-chart-wrapper">
             <canvas id="myChartDailyQuota"></canvas>
@@ -129,11 +151,19 @@
 
         <div class="my-card">
           <div class="my-chart-header">
-            <h2 class="my-section-title" id="myChartProjectsShareTitle">Udział projektów w czasie wykonania (minuty:sekundy)</h2>
-            <span class="my-badge my-badge-neutral" id="myChartProjectsShareLimitBadge" title="Maksymalny dopuszczalny czas trwania pojedynczego wykonania skryptu (Maximum execution time).">Limit GAS: maks. 6 min (360s) / wykonanie</span>
+            <h2 class="my-section-title" id="myChartPeakDurationTitle">Maksymalny czas pojedynczego wykonania per
+              projekt (minuty:sekundy)</h2>
+            <div class="my-chart-header-actions">
+              <label class="my-chart-option"
+                title="Pokaż lub ukryj referencyjną linię limitu wykonania GAS (maks. 6 min / 360s)">
+                <input type="checkbox" id="myToggleLimitLine" checked>
+                <span class="my-limit-preview-dash" aria-hidden="true"></span>
+                <span>limit GAS (6 min / 360s)</span>
+              </label>
+            </div>
           </div>
           <div class="my-chart-wrapper">
-            <canvas id="myChartProjectsShare"></canvas>
+            <canvas id="myChartPeakDuration"></canvas>
           </div>
         </div>
       </section>
@@ -172,22 +202,30 @@
     <section id="myViewSettings" class="my-view">
       <div class="my-card" style="max-width: 600px;">
         <h2 class="my-section-title">Konfiguracja Hub</h2>
-        
+
         <div class="my-form-group">
-          <label class="my-label" for="myInputRetention">Okno Retencji Danych (Dni): <span id="myRetentionDisplay">30</span></label>
-          <input type="range" class="my-range" id="myInputRetention" min="7" max="180" value="30" oninput="document.getElementById('myRetentionDisplay').innerText = this.value; myCheckSettingsDirtyState_();" onchange="myCheckSettingsDirtyState_()">
-          <p class="my-kpi-sub" style="margin-top: 6px;">Określa liczbę dni przechowywania procesów w arkuszu (7–180 dni).</p>
+          <label class="my-label" for="myInputRetention">Okno Retencji Danych (Dni): <span
+              id="myRetentionDisplay">30</span></label>
+          <input type="range" class="my-range" id="myInputRetention" min="7" max="180" value="30"
+            oninput="document.getElementById('myRetentionDisplay').innerText = this.value; myCheckSettingsDirtyState_();"
+            onchange="myCheckSettingsDirtyState_()">
+          <p class="my-kpi-sub" style="margin-top: 6px;">Określa liczbę dni przechowywania procesów w arkuszu (7–180
+            dni).</p>
         </div>
 
         <div class="my-form-group">
           <label class="my-label" for="myInputQuota">Limit dobowy kwoty wyzwalaczy (Sekundy)</label>
-          <input type="number" class="my-input" id="myInputQuota" value="5400" oninput="myCheckSettingsDirtyState_()" onchange="myCheckSettingsDirtyState_()">
-          <p class="my-kpi-sub" style="margin-top: 6px;">Konto Consumer: 5400s (90 min) | Konto Workspace: 21600s (6h).</p>
+          <input type="number" class="my-input" id="myInputQuota" value="5400" oninput="myCheckSettingsDirtyState_()"
+            onchange="myCheckSettingsDirtyState_()">
+          <p class="my-kpi-sub" style="margin-top: 6px;">Konto Consumer: 5400s (90 min) | Konto Workspace: 21600s (6h).
+          </p>
         </div>
 
         <div style="display: flex; gap: 12px; margin-top: 24px; align-items: center;">
-          <button id="myBtnSaveSettings" class="my-btn" onclick="myHandleSaveSettings()" disabled>Zapisz ustawienia</button>
-          <button id="myBtnCancelSettings" class="my-btn my-btn-secondary" style="display: none;" onclick="myCancelSettings()">Anuluj</button>
+          <button id="myBtnSaveSettings" class="my-btn" onclick="myHandleSaveSettings()" disabled>Zapisz
+            ustawienia</button>
+          <button id="myBtnCancelSettings" class="my-btn my-btn-secondary" style="display: none;"
+            onclick="myCancelSettings()">Anuluj</button>
         </div>
       </div>
     </section>
@@ -201,4 +239,5 @@
 
   <?!= myInclude('app.js'); ?>
 </body>
+
 </html>

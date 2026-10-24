@@ -48,6 +48,22 @@ function myInitFunctionSummary_(myFunctionName) {
 }
 
 /**
+ * Initialize empty series bucket object.
+ * @param {string} myBucketKey - Bucket identifier.
+ * @return {Object} Empty series bucket.
+ */
+function myCreateSeriesBucket_(myBucketKey) {
+  return {
+    bucketKey: myBucketKey,
+    triggerSec: 0,
+    totalSec: 0,
+    count: 0,
+    byProject: {},
+    byProjectMax: {}
+  };
+}
+
+/**
  * Aggregate processes dataset into frontend DTO.
  * @param {Array<IProcessRow>} myRows - Raw process rows.
  * @param {number} myQuotaLimitSec - Quota limit in seconds.
@@ -82,14 +98,7 @@ function myAggregateDataset(myRows, myQuotaLimitSec, myTz, myFromIso, myToIso, m
       for (let myCurrMs = myStartMs; myCurrMs <= myEndMs; myCurrMs += myStepMs) {
         const myFillKey = myGetBucketKey(new Date(myCurrMs), myEffectiveResolution, myTimezone);
         if (myFillKey && !mySeriesBuckets[myFillKey]) {
-          mySeriesBuckets[myFillKey] = {
-            bucketKey: myFillKey,
-            triggerSec: 0,
-            totalSec: 0,
-            count: 0,
-            byProject: {},
-            byProjectTotal: {}
-          };
+          mySeriesBuckets[myFillKey] = myCreateSeriesBucket_(myFillKey);
         }
       }
     }
@@ -114,19 +123,12 @@ function myAggregateDataset(myRows, myQuotaLimitSec, myTz, myFromIso, myToIso, m
     const myBucketKey = myGetBucketKey(myRow.startTime, myEffectiveResolution, myTimezone);
     if (myBucketKey) {
       if (!mySeriesBuckets[myBucketKey]) {
-        mySeriesBuckets[myBucketKey] = {
-          bucketKey: myBucketKey,
-          triggerSec: 0,
-          totalSec: 0,
-          count: 0,
-          byProject: {},
-          byProjectTotal: {}
-        };
+        mySeriesBuckets[myBucketKey] = myCreateSeriesBucket_(myBucketKey);
       }
       mySeriesBuckets[myBucketKey].totalSec += myRow.durationSec;
       mySeriesBuckets[myBucketKey].count++;
-      mySeriesBuckets[myBucketKey].byProjectTotal[myRow.projectName] =
-        (mySeriesBuckets[myBucketKey].byProjectTotal[myRow.projectName] || 0) + myRow.durationSec;
+      const myPrevMax = mySeriesBuckets[myBucketKey].byProjectMax[myRow.projectName] || 0;
+      mySeriesBuckets[myBucketKey].byProjectMax[myRow.projectName] = Math.max(myPrevMax, myRow.durationSec);
       if (myIsQuotaType) {
         mySeriesBuckets[myBucketKey].triggerSec += myRow.durationSec;
         mySeriesBuckets[myBucketKey].byProject[myRow.projectName] =
@@ -190,7 +192,7 @@ function myAggregateDataset(myRows, myQuotaLimitSec, myTz, myFromIso, myToIso, m
       count: myItem.count,
       percentUsed: Number(((myItem.triggerSec / myQuotaLimitSec) * 100).toFixed(1)),
       byProject: myItem.byProject,
-      byProjectTotal: myItem.byProjectTotal
+      byProjectMax: myItem.byProjectMax
     };
   });
 

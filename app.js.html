@@ -4,7 +4,7 @@
    */
 
   let myDailyQuotaChartInstance = null;
-  let myProjectsShareChartInstance = null;
+  let myPeakDurationChartInstance = null;
   let myActiveViewName = 'overview';
 
   /**
@@ -107,15 +107,62 @@
     { fill: 'hsla(180, 70%, 45%, 0.45)', border: 'hsl(180, 70%, 45%)' }
   ]);
 
+  const MY_GAS_DAILY_QUOTA_SEC = 5400;
+  const MY_GAS_MAX_EXECUTION_SEC = 360;
+
+  const MY_CHART_MODE = Object.freeze({
+    STACKED: 'STACKED',
+    OVERLAY: 'OVERLAY'
+  });
+
+  const MY_LIMIT_LINE_STYLE = Object.freeze({
+    borderColor: 'hsl(0, 75%, 60%)',
+    borderWidth: 2,
+    borderDash: [6, 6],
+    pointRadius: 0,
+    fill: false
+  });
+
   /**
-   * Render stacked area time-series chart for project metrics.
+   * Build limit reference line dataset.
+   * @param {number} myPointsCount - Number of data points.
+   * @param {number} myLimitValue - Limit value in seconds.
+   * @param {string} myToggleId - DOM checkbox toggle ID.
+   * @param {string} myLabel - Dataset label text.
+   * @return {Object} Chart.js dataset for limit line.
+   */
+  function myBuildLimitDataset_(myPointsCount, myLimitValue, myToggleId, myLabel) {
+    const myToggle = document.getElementById(myToggleId);
+    const myIsHidden = myToggle ? !myToggle.checked : false;
+    const myData = [];
+    for (let myI = 0; myI < myPointsCount; myI++) {
+      myData.push(myLimitValue);
+    }
+    return {
+      label: myLabel,
+      data: myData,
+      borderColor: MY_LIMIT_LINE_STYLE.borderColor,
+      borderWidth: MY_LIMIT_LINE_STYLE.borderWidth,
+      borderDash: MY_LIMIT_LINE_STYLE.borderDash,
+      pointRadius: MY_LIMIT_LINE_STYLE.pointRadius,
+      fill: false,
+      tension: 0,
+      stack: 'myLimitStack',
+      isLimitLine: true,
+      hidden: myIsHidden
+    };
+  }
+
+  /**
+   * Render time-series chart for project metrics (stacked area or overlay multi-line).
    * @param {string} myCanvasId - Canvas element ID.
    * @param {Object|null} myExistingInstance - Existing Chart.js instance.
    * @param {Array<Object>} myDailySeries - Time bucket series.
    * @param {string} myProjectFieldKey - Field in bucket holding project map.
+   * @param {string} [myChartMode] - STACKED or OVERLAY mode.
    * @return {Object|null} New Chart.js instance.
    */
-  function myRenderStackedTimeSeriesChart_(myCanvasId, myExistingInstance, myDailySeries, myProjectFieldKey) {
+  function myRenderTimeSeriesChart_(myCanvasId, myExistingInstance, myDailySeries, myProjectFieldKey, myChartMode, myLimitOptions) {
     const myCanvas = document.getElementById(myCanvasId);
     if (!myCanvas) return null;
     const myCtx = myCanvas.getContext('2d');
@@ -124,6 +171,7 @@
       myExistingInstance.destroy();
     }
 
+    const myIsOverlay = myChartMode === MY_CHART_MODE.OVERLAY;
     const myLabels = myDailySeries.map(function (d) { return d.dayKey || d.bucketKey; });
 
     const myProjectNames = [];
@@ -141,18 +189,23 @@
       const myColor = MY_CHART_COLOR_PALETTE[myIdx % MY_CHART_COLOR_PALETTE.length];
       const myData = myDailySeries.map(function (myDay) {
         const myMap = myDay[myProjectFieldKey];
-        return (myMap && myMap[myProjName]) ? Number(myMap[myProjName].toFixed(1)) : 0;
+        if (!myMap || typeof myMap[myProjName] === 'undefined') {
+          return myIsOverlay ? null : 0;
+        }
+        return Number(myMap[myProjName].toFixed(1));
       });
 
       return {
         label: myProjName,
         data: myData,
         borderColor: myColor.border,
-        backgroundColor: myColor.fill,
-        fill: true,
+        backgroundColor: myIsOverlay ? 'transparent' : myColor.fill,
+        fill: !myIsOverlay,
         tension: 0.1,
         borderWidth: 2,
-        pointRadius: myLabels.length > 50 ? 0 : 2
+        pointRadius: myLabels.length > 50 ? 0 : 2,
+        spanGaps: false,
+        stack: myIsOverlay ? undefined : 'myProjectStack'
       };
     });
 
@@ -161,12 +214,21 @@
         label: 'Brak aktywności',
         data: myDailySeries.map(function () { return 0; }),
         borderColor: 'hsl(217, 91%, 60%)',
-        backgroundColor: 'hsla(217, 91%, 60%, 0.1)',
-        fill: true,
+        backgroundColor: myIsOverlay ? 'transparent' : 'hsla(217, 91%, 60%, 0.1)',
+        fill: !myIsOverlay,
         tension: 0.1,
         borderWidth: 2,
         pointRadius: 0
       });
+    }
+
+    if (myLimitOptions && myLabels.length > 0) {
+      myDatasets.push(myBuildLimitDataset_(
+        myLabels.length,
+        myLimitOptions.limitValue,
+        myLimitOptions.toggleId,
+        myLimitOptions.label
+      ));
     }
 
     return new Chart(myCtx, {
@@ -186,11 +248,20 @@
           legend: {
             display: true,
             position: 'top',
-            labels: { color: 'hsl(215, 20%, 65%)', font: { size: 11 }, boxWidth: 10 }
+            labels: {
+              color: 'hsl(215, 20%, 65%)',
+              font: { size: 11 },
+              boxWidth: 10,
+              filter: function (myLegendItem, myChartData) {
+                const myDs = myChartData.datasets[myLegendItem.datasetIndex];
+                return !myDs || !myDs.isLimitLine;
+              }
+            }
           },
           tooltip: {
             callbacks: {
               label: function (myCtxItem) {
+                if (myCtxItem.raw === null || typeof myCtxItem.raw === 'undefined') return '';
                 return ' ' + myCtxItem.dataset.label + ': ' + myFormatDurationClient(myCtxItem.raw);
               }
             }
@@ -198,7 +269,7 @@
         },
         scales: {
           x: {
-            stacked: true,
+            stacked: !myIsOverlay,
             grid: { color: 'hsla(217, 33%, 30%, 0.2)' },
             ticks: {
               color: 'hsl(215, 20%, 65%)',
@@ -208,7 +279,7 @@
             }
           },
           y: {
-            stacked: true,
+            stacked: !myIsOverlay,
             beginAtZero: true,
             grid: { color: 'hsla(217, 33%, 30%, 0.2)' },
             ticks: {
@@ -231,25 +302,80 @@
    * @param {Array<Object>} myDailySeries - Daily quota points.
    */
   function myRenderDailyChart(myDailySeries) {
-    myDailyQuotaChartInstance = myRenderStackedTimeSeriesChart_(
+    const myQuotaSec = (myLoadedSettings_ && myLoadedSettings_.quotaLimitSec) ? myLoadedSettings_.quotaLimitSec : MY_GAS_DAILY_QUOTA_SEC;
+    const myQuotaMins = Math.round(myQuotaSec / 60);
+    const myLabel = 'limit GAS (' + myQuotaMins + 'm / ' + myQuotaSec + 's)';
+
+    const myHeaderLabel = document.getElementById('myDailyQuotaLimitLabel');
+    if (myHeaderLabel) {
+      myHeaderLabel.innerText = myLabel;
+    }
+
+    myDailyQuotaChartInstance = myRenderTimeSeriesChart_(
       'myChartDailyQuota',
       myDailyQuotaChartInstance,
       myDailySeries,
-      'byProject'
+      'byProject',
+      MY_CHART_MODE.STACKED,
+      {
+        limitValue: myQuotaSec,
+        toggleId: 'myToggleDailyQuotaLimitLine',
+        label: myLabel
+      }
     );
   }
 
   /**
-   * Render projects duration share stacked area chart using Chart.js.
-   * @param {Array<Object>} myDailySeries - Daily series with byProjectTotal.
+   * Render peak execution duration overlay chart using Chart.js.
+   * @param {Array<Object>} myDailySeries - Daily series with byProjectMax.
    */
-  function myRenderProjectsShareChart(myDailySeries) {
-    myProjectsShareChartInstance = myRenderStackedTimeSeriesChart_(
-      'myChartProjectsShare',
-      myProjectsShareChartInstance,
+  function myRenderPeakDurationChart(myDailySeries) {
+    myPeakDurationChartInstance = myRenderTimeSeriesChart_(
+      'myChartPeakDuration',
+      myPeakDurationChartInstance,
       myDailySeries,
-      'byProjectTotal'
+      'byProjectMax',
+      MY_CHART_MODE.OVERLAY,
+      {
+        limitValue: MY_GAS_MAX_EXECUTION_SEC,
+        toggleId: 'myToggleLimitLine',
+        label: 'limit GAS (6 min / 360s)'
+      }
     );
+  }
+
+  /**
+   * Bind change event for limit line toggle checkbox.
+   * @param {string} myToggleId - DOM checkbox element ID.
+   * @param {Function} myGetInstance - Callback returning Chart.js instance.
+   */
+  function myBindLimitToggle_(myToggleId, myGetInstance) {
+    const myToggle = document.getElementById(myToggleId);
+    if (!myToggle || myToggle.dataset.initialized) return;
+    myToggle.dataset.initialized = 'true';
+    myToggle.addEventListener('change', function () {
+      const myChart = myGetInstance();
+      if (!myChart) return;
+      const myLimitDs = myChart.data.datasets.find(function (d) {
+        return d.isLimitLine;
+      });
+      if (myLimitDs) {
+        myLimitDs.hidden = !myToggle.checked;
+        myChart.update();
+      }
+    });
+  }
+
+  /**
+   * Initialize all chart limit line toggles.
+   */
+  function myInitLimitLineToggles_() {
+    myBindLimitToggle_('myToggleLimitLine', function () {
+      return myPeakDurationChartInstance;
+    });
+    myBindLimitToggle_('myToggleDailyQuotaLimitLine', function () {
+      return myDailyQuotaChartInstance;
+    });
   }
 
   /**
@@ -972,6 +1098,22 @@
   }
 
   /**
+   * Initialize empty client series bucket.
+   * @param {string} myBucketKey - Bucket identifier.
+   * @return {Object} Empty series bucket.
+   */
+  function myCreateClientSeriesBucket_(myBucketKey) {
+    return {
+      bucketKey: myBucketKey,
+      triggerSec: 0,
+      totalSec: 0,
+      count: 0,
+      byProject: {},
+      byProjectMax: {}
+    };
+  }
+
+  /**
    * In-memory aggregation engine running in browser RAM.
    * @param {Array<Object>} myProcesses - Cached processes.
    * @param {string} myFromIso - Start ISO.
@@ -1006,14 +1148,7 @@
         for (let myCurrMs = myFromMs; myCurrMs <= myToMs; myCurrMs += myStepMs) {
           const myFillKey = myGetClientBucketKey_(myCurrMs, myEffectiveResolution);
           if (myFillKey && !mySeriesBuckets[myFillKey]) {
-            mySeriesBuckets[myFillKey] = {
-              bucketKey: myFillKey,
-              triggerSec: 0,
-              totalSec: 0,
-              count: 0,
-              byProject: {},
-              byProjectTotal: {}
-            };
+            mySeriesBuckets[myFillKey] = myCreateClientSeriesBucket_(myFillKey);
           }
         }
       }
@@ -1041,19 +1176,12 @@
       const myBucketKey = myGetClientBucketKey_(myRow.startTime, myEffectiveResolution);
       if (myBucketKey) {
         if (!mySeriesBuckets[myBucketKey]) {
-          mySeriesBuckets[myBucketKey] = {
-            bucketKey: myBucketKey,
-            triggerSec: 0,
-            totalSec: 0,
-            count: 0,
-            byProject: {},
-            byProjectTotal: {}
-          };
+          mySeriesBuckets[myBucketKey] = myCreateClientSeriesBucket_(myBucketKey);
         }
         mySeriesBuckets[myBucketKey].totalSec += myRow.durationSec;
         mySeriesBuckets[myBucketKey].count++;
-        mySeriesBuckets[myBucketKey].byProjectTotal[myRow.projectName] =
-          (mySeriesBuckets[myBucketKey].byProjectTotal[myRow.projectName] || 0) + myRow.durationSec;
+        const myPrevMax = mySeriesBuckets[myBucketKey].byProjectMax[myRow.projectName] || 0;
+        mySeriesBuckets[myBucketKey].byProjectMax[myRow.projectName] = Math.max(myPrevMax, myRow.durationSec);
         if (myIsQuotaType) {
           mySeriesBuckets[myBucketKey].triggerSec += myRow.durationSec;
           mySeriesBuckets[myBucketKey].byProject[myRow.projectName] =
@@ -1133,7 +1261,7 @@
         count: myItem.count,
         percentUsed: Number(((myItem.triggerSec / myQuotaLimitSec) * 100).toFixed(1)),
         byProject: myItem.byProject,
-        byProjectTotal: myItem.byProjectTotal
+        byProjectMax: myItem.byProjectMax
       };
     });
 
@@ -1194,9 +1322,9 @@
     if (myChartTitle) {
       myChartTitle.innerText = 'Miks zużycia kwoty wyzwalaczy per projekt (ziarnistość: ' + myAggregated.effectiveResolution + ')';
     }
-    const myShareTitle = document.getElementById('myChartProjectsShareTitle');
-    if (myShareTitle) {
-      myShareTitle.innerText = 'Udział projektów w czasie wykonania (ziarnistość: ' + myAggregated.effectiveResolution + ')';
+    const myPeakTitle = document.getElementById('myChartPeakDurationTitle');
+    if (myPeakTitle) {
+      myPeakTitle.innerText = 'Maksymalny czas pojedynczego wykonania per projekt (ziarnistość: ' + myAggregated.effectiveResolution + ')';
     }
 
     const myDailyQuotaLimitBadge = document.getElementById('myChartDailyQuotaLimitBadge');
@@ -1208,7 +1336,7 @@
 
     myRenderKpis(myAggregated.summary);
     myRenderDailyChart(myAggregated.dailySeries);
-    myRenderProjectsShareChart(myAggregated.dailySeries);
+    myRenderPeakDurationChart(myAggregated.dailySeries);
     myRenderProjectsTable(myAggregated.projects);
 
     myUpdateSyncStatusDisplay_(myClientLastSync_);
@@ -1436,6 +1564,7 @@
   // Initial load
   document.addEventListener('DOMContentLoaded', function () {
     myInitDatetimeWheelScrubbing_();
+    myInitLimitLineToggles_();
     const myHasCachedData = myRestoreProcessesFromStorage_();
     const myHasRestoredView = myRestoreViewState_();
     if (!myHasRestoredView) {

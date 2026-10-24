@@ -278,6 +278,82 @@
     margin-bottom: 0;
   }
 
+  .my-chart-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .my-chart-option {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--my-text-secondary);
+    background: var(--my-bg-surface);
+    border: 1px solid var(--my-border);
+    padding: 5px 11px;
+    border-radius: var(--my-radius-sm);
+    cursor: pointer;
+    user-select: none;
+    transition: all 0.2s ease;
+  }
+
+  .my-chart-option:hover {
+    color: var(--my-text-primary);
+    border-color: var(--my-border-focus);
+    background: var(--my-bg-card-hover);
+  }
+
+  .my-chart-option input[type="checkbox"] {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    margin: 0;
+    cursor: pointer;
+    background: var(--my-bg-base);
+    border: 1px solid var(--my-border);
+    border-radius: 3px;
+    display: inline-grid;
+    place-content: center;
+    transition: all 0.2s ease;
+  }
+
+  .my-chart-option input[type="checkbox"]::before {
+    content: "";
+    width: 8px;
+    height: 8px;
+    transform: scale(0);
+    transition: 120ms transform ease-in-out;
+    box-shadow: inset 1em 1em var(--my-accent);
+    transform-origin: center;
+    clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+  }
+
+  .my-chart-option input[type="checkbox"]:checked {
+    background: hsla(217, 91%, 60%, 0.15);
+    border-color: var(--my-accent);
+  }
+
+  .my-chart-option input[type="checkbox"]:checked::before {
+    transform: scale(1);
+  }
+
+  .my-chart-option:hover input[type="checkbox"] {
+    border-color: var(--my-accent);
+  }
+
+  .my-limit-preview-dash {
+    display: inline-block;
+    width: 14px;
+    height: 0;
+    border-top: 2px dashed hsl(0, 84%, 60%);
+    vertical-align: middle;
+  }
+
   .my-chart-wrapper {
     position: relative;
     height: 280px;
