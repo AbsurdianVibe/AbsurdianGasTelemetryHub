@@ -90,3 +90,58 @@ function myFetchAllUserProcesses(myStartIso, myEndIso) {
 
   return myProcesses;
 }
+
+/**
+ * Build query URL for dedicated script processes list endpoint.
+ * @param {string} myScriptId - Target script project ID.
+ * @param {string} myStartIso - Start ISO timestamp.
+ * @param {string} myEndIso - End ISO timestamp.
+ * @param {string} myPageToken - Pagination token.
+ * @return {string} Target URL.
+ */
+function myBuildScriptListUrl_(myScriptId, myStartIso, myEndIso, myPageToken) {
+  let myUrl = MY_SCRIPT_PROCESSES_ENDPOINT + '?scriptId=' + encodeURIComponent(myScriptId) +
+    '&pageSize=' + MY_PAGE_SIZE;
+  if (myStartIso) myUrl += '&scriptProcessFilter.startTime=' + encodeURIComponent(myStartIso);
+  if (myEndIso) myUrl += '&scriptProcessFilter.endTime=' + encodeURIComponent(myEndIso);
+  if (myPageToken) myUrl += '&pageToken=' + encodeURIComponent(myPageToken);
+  return myUrl;
+}
+
+/**
+ * Fetch processes for a dedicated script project with pagination.
+ * @param {string} myScriptId - Target script ID.
+ * @param {string} myStartIso - Start boundary.
+ * @param {string} myEndIso - End boundary.
+ * @return {Array<IProcessRow>} Harvested process list.
+ */
+function myFetchProcessesForScript(myScriptId, myStartIso, myEndIso) {
+  const myToken = ScriptApp.getOAuthToken();
+  const myCollectedAt = new Date().toISOString();
+  let myProcesses = [];
+  let myPageToken = '';
+  let myPageCount = 0;
+
+  do {
+    const myResponse = UrlFetchApp.fetch(myBuildScriptListUrl_(myScriptId, myStartIso, myEndIso, myPageToken), {
+      method: 'get',
+      headers: { Authorization: 'Bearer ' + myToken },
+      muteHttpExceptions: true
+    });
+
+    if (myResponse.getResponseCode() !== MY_HTTP_SUCCESS) {
+      throw new Error('Processes:listScriptProcesses API HTTP ' + myResponse.getResponseCode() + ': ' + myResponse.getContentText());
+    }
+
+    const myData = JSON.parse(myResponse.getContentText());
+    const myBatch = myData.processes || [];
+    myBatch.forEach(function (myRaw) {
+      myProcesses.push(myNormalizeProcess_(myRaw, myCollectedAt));
+    });
+
+    myPageToken = myData.nextPageToken || '';
+    myPageCount++;
+  } while (myPageToken && myPageCount < MY_MAX_PAGES);
+
+  return myProcesses;
+}

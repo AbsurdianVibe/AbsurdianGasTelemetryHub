@@ -3,6 +3,10 @@
  */
 
 const MY_PROCESSES_ENDPOINT = 'https://script.googleapis.com/v1/processes';
+const MY_SCRIPT_PROCESSES_ENDPOINT = 'https://script.googleapis.com/v1/processes:listScriptProcesses';
+const MY_EXTERNAL_MONITORED_SCRIPTS = Object.freeze([
+  '1aLo1jNhQW12w_FS3WNpgW85MMALhHALjGi5k2Efs-ZdfM3qsCNf0-_-o'
+]);
 const MY_PAGE_SIZE = 100;
 const MY_MAX_PAGES = 20;
 const MY_HTTP_SUCCESS = 200;

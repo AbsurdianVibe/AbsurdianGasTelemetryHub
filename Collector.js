@@ -40,7 +40,17 @@ function myRunCollector() {
       myOverlapStartIso = myStartIso;
     }
 
-    const myRawProcesses = myFetchAllUserProcesses(myStartIso, '');
+    let myRawProcesses = myFetchAllUserProcesses(myStartIso, '');
+    if (typeof MY_EXTERNAL_MONITORED_SCRIPTS !== 'undefined' && Array.isArray(MY_EXTERNAL_MONITORED_SCRIPTS)) {
+      MY_EXTERNAL_MONITORED_SCRIPTS.forEach(function (myScriptId) {
+        try {
+          const myScriptBatch = myFetchProcessesForScript(myScriptId, myStartIso, '');
+          myRawProcesses = myRawProcesses.concat(myScriptBatch);
+        } catch (myErr) {
+          console.warn('Failed to harvest processes for script ' + myScriptId + ': ' + myErr.message);
+        }
+      });
+    }
     const myTerminalProcesses = myFilterCompletedOnly_(myRawProcesses);
     const myAddedCount = myAppendProcessesBatch(myTerminalProcesses, myOverlapStartIso);
 
