@@ -59,7 +59,8 @@ function myCreateSeriesBucket_(myBucketKey) {
     totalSec: 0,
     count: 0,
     byProject: {},
-    byProjectMax: {}
+    byProjectMax: {},
+    byProjectMaxFn: {}
   };
 }
 
@@ -128,7 +129,10 @@ function myAggregateDataset(myRows, myQuotaLimitSec, myTz, myFromIso, myToIso, m
       mySeriesBuckets[myBucketKey].totalSec += myRow.durationSec;
       mySeriesBuckets[myBucketKey].count++;
       const myPrevMax = mySeriesBuckets[myBucketKey].byProjectMax[myRow.projectName] || 0;
-      mySeriesBuckets[myBucketKey].byProjectMax[myRow.projectName] = Math.max(myPrevMax, myRow.durationSec);
+      if (myRow.durationSec >= myPrevMax) {
+        mySeriesBuckets[myBucketKey].byProjectMax[myRow.projectName] = myRow.durationSec;
+        mySeriesBuckets[myBucketKey].byProjectMaxFn[myRow.projectName] = myRow.functionName;
+      }
       if (myIsQuotaType) {
         mySeriesBuckets[myBucketKey].triggerSec += myRow.durationSec;
         mySeriesBuckets[myBucketKey].byProject[myRow.projectName] =
@@ -192,7 +196,8 @@ function myAggregateDataset(myRows, myQuotaLimitSec, myTz, myFromIso, myToIso, m
       count: myItem.count,
       percentUsed: Number(((myItem.triggerSec / myQuotaLimitSec) * 100).toFixed(1)),
       byProject: myItem.byProject,
-      byProjectMax: myItem.byProjectMax
+      byProjectMax: myItem.byProjectMax,
+      byProjectMaxFn: myItem.byProjectMaxFn
     };
   });
 

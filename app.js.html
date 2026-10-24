@@ -7,6 +7,13 @@
   let myPeakDurationChartInstance = null;
   let myActiveViewName = 'overview';
 
+  const MY_STORAGE_KEY_VIEW_STATE = 'myGasTelemetryHub_viewState';
+  const MY_STORAGE_KEY_PROCESSES = 'myGasTelemetryHub_cachedProcesses';
+  const MY_STORAGE_KEY_LAST_SYNC = 'myGasTelemetryHub_lastSync';
+  const MY_STORAGE_KEY_SETTINGS = 'myGasTelemetryHub_settings';
+  const MY_STORAGE_KEY_PROJECT_COLORS = 'myGasTelemetryHub_projectColors';
+  const MY_STORAGE_KEY_HIDDEN_PROJECTS = 'myGasTelemetryHub_hiddenProjects';
+
   /**
    * Promise wrapper for google.script.run server calls.
    * @param {string} myMethodName - Remote function name.
@@ -99,13 +106,83 @@
   }
 
   const MY_CHART_COLOR_PALETTE = Object.freeze([
-    { fill: 'hsla(217, 91%, 60%, 0.45)', border: 'hsl(217, 91%, 60%)' },
-    { fill: 'hsla(142, 71%, 45%, 0.45)', border: 'hsl(142, 71%, 45%)' },
-    { fill: 'hsla(260, 80%, 65%, 0.45)', border: 'hsl(260, 80%, 65%)' },
-    { fill: 'hsla(38, 92%, 50%, 0.45)', border: 'hsl(38, 92%, 50%)' },
-    { fill: 'hsla(330, 80%, 60%, 0.45)', border: 'hsl(330, 80%, 60%)' },
-    { fill: 'hsla(180, 70%, 45%, 0.45)', border: 'hsl(180, 70%, 45%)' }
+    { fill: 'hsla(217, 91%, 60%, 0.45)', border: 'hsl(217, 91%, 60%)' }, // Blue
+    { fill: 'hsla(142, 71%, 45%, 0.45)', border: 'hsl(142, 71%, 45%)' }, // Green
+    { fill: 'hsla(260, 80%, 65%, 0.45)', border: 'hsl(260, 80%, 65%)' }, // Purple
+    { fill: 'hsla(38, 92%, 50%, 0.45)', border: 'hsl(38, 92%, 50%)' },   // Amber
+    { fill: 'hsla(330, 80%, 60%, 0.45)', border: 'hsl(330, 80%, 60%)' }, // Pink
+    { fill: 'hsla(180, 70%, 45%, 0.45)', border: 'hsl(180, 70%, 45%)' }, // Teal
+    { fill: 'hsla(280, 70%, 50%, 0.45)', border: 'hsl(280, 70%, 50%)' }, // Indigo
+    { fill: 'hsla(15, 85%, 55%, 0.45)', border: 'hsl(15, 85%, 55%)' },   // Coral
+    { fill: 'hsla(80, 75%, 45%, 0.45)', border: 'hsl(80, 75%, 45%)' }    // Lime
   ]);
+
+  let myProjectColorRegistry_ = {};
+  let myHiddenProjects_ = {};
+
+  /**
+   * Restore project colors registry from localStorage.
+   */
+  function myRestoreProjectColors_() {
+    try {
+      const myRaw = localStorage.getItem(MY_STORAGE_KEY_PROJECT_COLORS);
+      if (myRaw) {
+        myProjectColorRegistry_ = JSON.parse(myRaw) || {};
+      }
+    } catch (myErr) {
+      myProjectColorRegistry_ = {};
+    }
+  }
+
+  /**
+   * Save project colors registry to localStorage.
+   */
+  function mySaveProjectColors_() {
+    try {
+      localStorage.setItem(MY_STORAGE_KEY_PROJECT_COLORS, JSON.stringify(myProjectColorRegistry_));
+    } catch (myErr) {
+      // Ignore storage errors
+    }
+  }
+
+  /**
+   * Restore hidden projects registry from localStorage.
+   */
+  function myRestoreHiddenProjects_() {
+    try {
+      const myRaw = localStorage.getItem(MY_STORAGE_KEY_HIDDEN_PROJECTS);
+      if (myRaw) {
+        myHiddenProjects_ = JSON.parse(myRaw) || {};
+      }
+    } catch (myErr) {
+      myHiddenProjects_ = {};
+    }
+  }
+
+  /**
+   * Save hidden projects registry to localStorage.
+   */
+  function mySaveHiddenProjects_() {
+    try {
+      localStorage.setItem(MY_STORAGE_KEY_HIDDEN_PROJECTS, JSON.stringify(myHiddenProjects_));
+    } catch (myErr) {
+      // Ignore storage errors
+    }
+  }
+
+  /**
+   * Deterministically get consistent color palette for a project and persist it.
+   * @param {string} myProjectName - Name of the project.
+   * @return {Object} Color entry with fill and border.
+   */
+  function myGetProjectColor_(myProjectName) {
+    if (!myProjectColorRegistry_[myProjectName]) {
+      const myAssignedCount = Object.keys(myProjectColorRegistry_).length;
+      myProjectColorRegistry_[myProjectName] = MY_CHART_COLOR_PALETTE[myAssignedCount % MY_CHART_COLOR_PALETTE.length];
+      mySaveProjectColors_();
+    }
+    return myProjectColorRegistry_[myProjectName];
+  }
 
   const MY_GAS_DAILY_QUOTA_SEC = 5400;
   const MY_GAS_MAX_EXECUTION_SEC = 360;
@@ -184,9 +261,10 @@
         }
       });
     });
+    myProjectNames.sort();
 
-    const myDatasets = myProjectNames.map(function (myProjName, myIdx) {
-      const myColor = MY_CHART_COLOR_PALETTE[myIdx % MY_CHART_COLOR_PALETTE.length];
+    const myDatasets = myProjectNames.map(function (myProjName) {
+      const myColor = myGetProjectColor_(myProjName);
       const myData = myDailySeries.map(function (myDay) {
         const myMap = myDay[myProjectFieldKey];
         if (!myMap || typeof myMap[myProjName] === 'undefined') {
@@ -198,6 +276,9 @@
       return {
         label: myProjName,
         data: myData,
+        fnNames: myIsOverlay ? myDailySeries.map(function (myDay) {
+          return (myDay.byProjectMaxFn && myDay.byProjectMaxFn[myProjName]) || '';
+        }) : undefined,
         borderColor: myColor.border,
         backgroundColor: myIsOverlay ? 'transparent' : myColor.fill,
         fill: !myIsOverlay,
@@ -205,7 +286,8 @@
         borderWidth: 2,
         pointRadius: myLabels.length > 50 ? 0 : 2,
         spanGaps: false,
-        stack: myIsOverlay ? undefined : 'myProjectStack'
+        stack: myIsOverlay ? undefined : 'myProjectStack',
+        hidden: !!myHiddenProjects_[myProjName]
       };
     });
 
@@ -248,6 +330,33 @@
           legend: {
             display: true,
             position: 'top',
+            onClick: function (myEvent, myLegendItem, myLegend) {
+              const myChart = myLegend.chart;
+              const myDs = myChart.data.datasets[myLegendItem.datasetIndex];
+              if (!myDs || myDs.isLimitLine) return;
+              const myProjName = myDs.label;
+              const myIsVisible = myChart.isDatasetVisible(myLegendItem.datasetIndex);
+
+              if (myIsVisible) {
+                myHiddenProjects_[myProjName] = true;
+              } else {
+                delete myHiddenProjects_[myProjName];
+              }
+              mySaveHiddenProjects_();
+
+              [myDailyQuotaChartInstance, myPeakDurationChartInstance].forEach(function (myInst) {
+                if (!myInst) return;
+                myInst.data.datasets.forEach(function (d, myIdx) {
+                  if (d.label === myProjName) {
+                    if (myHiddenProjects_[myProjName]) {
+                      myInst.hide(myIdx);
+                    } else {
+                      myInst.show(myIdx);
+                    }
+                  }
+                });
+              });
+            },
             labels: {
               color: 'hsl(215, 20%, 65%)',
               font: { size: 11 },
@@ -259,10 +368,16 @@
             }
           },
           tooltip: {
+            filter: function (myTooltipItem) {
+              return !myTooltipItem.dataset || !myTooltipItem.dataset.isLimitLine;
+            },
             callbacks: {
               label: function (myCtxItem) {
                 if (myCtxItem.raw === null || typeof myCtxItem.raw === 'undefined') return '';
-                return ' ' + myCtxItem.dataset.label + ': ' + myFormatDurationClient(myCtxItem.raw);
+                if (myCtxItem.dataset && myCtxItem.dataset.isLimitLine) return null;
+                const myFnName = (myIsOverlay && myCtxItem.dataset.fnNames) ? myCtxItem.dataset.fnNames[myCtxItem.dataIndex] : '';
+                const myFnSuffix = myFnName ? ' (' + myFnName + ')' : '';
+                return ' ' + myCtxItem.dataset.label + myFnSuffix + ': ' + myFormatDurationClient(myCtxItem.raw);
               }
             }
           }
@@ -355,14 +470,16 @@
     myToggle.dataset.initialized = 'true';
     myToggle.addEventListener('change', function () {
       const myChart = myGetInstance();
-      if (!myChart) return;
-      const myLimitDs = myChart.data.datasets.find(function (d) {
-        return d.isLimitLine;
-      });
-      if (myLimitDs) {
-        myLimitDs.hidden = !myToggle.checked;
-        myChart.update();
+      if (myChart) {
+        const myLimitDs = myChart.data.datasets.find(function (d) {
+          return d.isLimitLine;
+        });
+        if (myLimitDs) {
+          myLimitDs.hidden = !myToggle.checked;
+          myChart.update();
+        }
       }
+      mySaveViewState_();
     });
   }
 
@@ -416,10 +533,7 @@
     myTbody.innerHTML = myHtml;
   }
 
-  const MY_STORAGE_KEY_VIEW_STATE = 'myGasTelemetryHub_viewState';
-  const MY_STORAGE_KEY_PROCESSES = 'myGasTelemetryHub_cachedProcesses';
-  const MY_STORAGE_KEY_LAST_SYNC = 'myGasTelemetryHub_lastSync';
-  const MY_STORAGE_KEY_SETTINGS = 'myGasTelemetryHub_settings';
+
 
   let myGlobalFromIso = '';
   let myGlobalToIso = '';
@@ -562,12 +676,16 @@
    */
   function mySaveViewState_() {
     try {
+      const myDailyToggle = document.getElementById('myToggleDailyQuotaLimitLine');
+      const myPeakToggle = document.getElementById('myToggleLimitLine');
       const myState = {
         activeTab: myActiveViewName,
         presetDays: myGlobalPresetDays,
         fromIso: myGlobalFromIso,
         toIso: myGlobalToIso,
-        resolution: myGlobalResolution
+        resolution: myGlobalResolution,
+        showDailyLimit: myDailyToggle ? myDailyToggle.checked : true,
+        showPeakLimit: myPeakToggle ? myPeakToggle.checked : true
       };
       localStorage.setItem(MY_STORAGE_KEY_VIEW_STATE, JSON.stringify(myState));
     } catch (myErr) {
@@ -587,6 +705,16 @@
       if (!myState || typeof myState !== 'object') return false;
 
       let myRestored = false;
+
+      if (typeof myState.showDailyLimit === 'boolean') {
+        const myDailyToggle = document.getElementById('myToggleDailyQuotaLimitLine');
+        if (myDailyToggle) myDailyToggle.checked = myState.showDailyLimit;
+      }
+
+      if (typeof myState.showPeakLimit === 'boolean') {
+        const myPeakToggle = document.getElementById('myToggleLimitLine');
+        if (myPeakToggle) myPeakToggle.checked = myState.showPeakLimit;
+      }
 
       if (myState.resolution) {
         myGlobalResolution = myState.resolution;
@@ -1109,7 +1237,8 @@
       totalSec: 0,
       count: 0,
       byProject: {},
-      byProjectMax: {}
+      byProjectMax: {},
+      byProjectMaxFn: {}
     };
   }
 
@@ -1181,7 +1310,10 @@
         mySeriesBuckets[myBucketKey].totalSec += myRow.durationSec;
         mySeriesBuckets[myBucketKey].count++;
         const myPrevMax = mySeriesBuckets[myBucketKey].byProjectMax[myRow.projectName] || 0;
-        mySeriesBuckets[myBucketKey].byProjectMax[myRow.projectName] = Math.max(myPrevMax, myRow.durationSec);
+        if (myRow.durationSec >= myPrevMax) {
+          mySeriesBuckets[myBucketKey].byProjectMax[myRow.projectName] = myRow.durationSec;
+          mySeriesBuckets[myBucketKey].byProjectMaxFn[myRow.projectName] = myRow.functionName;
+        }
         if (myIsQuotaType) {
           mySeriesBuckets[myBucketKey].triggerSec += myRow.durationSec;
           mySeriesBuckets[myBucketKey].byProject[myRow.projectName] =
@@ -1261,7 +1393,8 @@
         count: myItem.count,
         percentUsed: Number(((myItem.triggerSec / myQuotaLimitSec) * 100).toFixed(1)),
         byProject: myItem.byProject,
-        byProjectMax: myItem.byProjectMax
+        byProjectMax: myItem.byProjectMax,
+        byProjectMaxFn: myItem.byProjectMaxFn
       };
     });
 
@@ -1332,6 +1465,12 @@
       const myLimitSec = (myLoadedSettings_ && myLoadedSettings_.quotaLimitSec) || (mySettings_ && mySettings_.quotaLimitSec) || 5400;
       const myLimitMin = Math.round(myLimitSec / 60);
       myDailyQuotaLimitBadge.innerText = 'Limit GAS: ' + myLimitMin + 'm / doba (' + myLimitSec + 's)';
+    }
+
+    if (myAggregated.projects) {
+      myAggregated.projects.map(function (p) { return p.projectName; }).sort().forEach(function (pName) {
+        myGetProjectColor_(pName);
+      });
     }
 
     myRenderKpis(myAggregated.summary);
@@ -1563,6 +1702,8 @@
 
   // Initial load
   document.addEventListener('DOMContentLoaded', function () {
+    myRestoreProjectColors_();
+    myRestoreHiddenProjects_();
     myInitDatetimeWheelScrubbing_();
     myInitLimitLineToggles_();
     const myHasCachedData = myRestoreProcessesFromStorage_();
