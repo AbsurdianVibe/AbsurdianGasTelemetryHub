@@ -6,6 +6,7 @@
   let myDailyQuotaChartInstance = null;
   let myPeakDurationChartInstance = null;
   let myActiveViewName = 'overview';
+  const myTabScrollPositions_ = {};
 
   const MY_STORAGE_KEY_VIEW_STATE = 'myGasTelemetryHub_viewState';
   const MY_STORAGE_KEY_PROCESSES = 'myGasTelemetryHub_cachedProcesses';
@@ -38,6 +39,9 @@
    * @param {string} myTabKey - Target tab key.
    */
   function mySwitchView(myTabKey) {
+    if (myActiveViewName && myActiveViewName !== myTabKey) {
+      myTabScrollPositions_[myActiveViewName] = window.scrollY;
+    }
     myActiveViewName = myTabKey;
     ['overview', 'projects', 'settings'].forEach(function (myKey) {
       const myNavBtn = document.getElementById('myNavTab' + myKey.charAt(0).toUpperCase() + myKey.slice(1));
@@ -56,7 +60,21 @@
       myTimeBar.style.display = (myTabKey === 'settings') ? 'none' : 'flex';
     }
 
+    const myResBar = document.getElementById('myTimeResolutionsBar');
+    if (myResBar) {
+      myResBar.style.display = (myTabKey === 'overview') ? 'flex' : 'none';
+    }
+
     mySaveViewState_();
+
+    const myTargetScrollY = myTabScrollPositions_[myTabKey] || 0;
+    window.requestAnimationFrame(function () {
+      document.documentElement.style.scrollBehavior = 'auto';
+      window.scrollTo(0, myTargetScrollY);
+      window.requestAnimationFrame(function () {
+        document.documentElement.style.scrollBehavior = '';
+      });
+    });
   }
 
   /**
@@ -272,7 +290,9 @@
     });
     myProjectNames.sort();
 
-    const myDatasets = myProjectNames.map(function (myProjName) {
+    const myOrderedProjects = myIsOverlay ? myProjectNames : myProjectNames.slice().reverse();
+
+    const myDatasets = myOrderedProjects.map(function (myProjName) {
       const myColor = myGetProjectColor_(myProjName);
       const myData = myDailySeries.map(function (myDay) {
         const myMap = myDay[myProjectFieldKey];
@@ -322,12 +342,59 @@
       ));
     }
 
+    const MY_TOOLTIP_CURSOR_OFFSET_X = 20;
+    if (window.Chart && Chart.Tooltip && Chart.Tooltip.positioners) {
+      Chart.Tooltip.positioners.myFollowCursor = function (myElements, myEventPosition) {
+        if (!myElements || !myElements.length || !myEventPosition || typeof myEventPosition.x === 'undefined') {
+          return false;
+        }
+        const myChartArea = this.chart && this.chart.chartArea;
+        const myRightBoundary = myChartArea ? myChartArea.right : ((this.chart && this.chart.width) || 800);
+        const myTooltipWidth = this.width || 180;
+        const myIsFlippedToLeft = (myEventPosition.x + MY_TOOLTIP_CURSOR_OFFSET_X + myTooltipWidth > myRightBoundary);
+        const myOffsetX = myIsFlippedToLeft ? -MY_TOOLTIP_CURSOR_OFFSET_X : MY_TOOLTIP_CURSOR_OFFSET_X;
+
+        return {
+          x: myEventPosition.x + myOffsetX,
+          y: myEventPosition.y,
+          xAlign: myIsFlippedToLeft ? 'right' : 'left'
+        };
+      };
+    }
+
+    const myVerticalGuideLinePlugin = {
+      id: 'myVerticalGuideLine',
+      beforeDatasetsDraw: function (myChart) {
+        if (!myChart.tooltip) return;
+        const myActive = typeof myChart.tooltip.getActiveElements === 'function'
+          ? myChart.tooltip.getActiveElements()
+          : myChart.tooltip._active;
+        if (!myActive || !myActive.length || !myActive[0].element) return;
+
+        const myX = myActive[0].element.x;
+        const myChartArea = myChart.chartArea;
+        if (!myChartArea) return;
+
+        const myCtx = myChart.ctx;
+        myCtx.save();
+        myCtx.beginPath();
+        myCtx.moveTo(myX, myChartArea.top);
+        myCtx.lineTo(myX, myChartArea.bottom);
+        myCtx.lineWidth = 1;
+        myCtx.setLineDash([4, 4]);
+        myCtx.strokeStyle = 'hsla(215, 20%, 65%, 0.45)';
+        myCtx.stroke();
+        myCtx.restore();
+      }
+    };
+
     return new Chart(myCtx, {
       type: 'line',
       data: {
         labels: myLabels,
         datasets: myDatasets
       },
+      plugins: [myVerticalGuideLinePlugin],
       options: {
         responsive: true,
         maintainAspectRatio: false,
@@ -369,7 +436,14 @@
             labels: {
               color: 'hsl(215, 20%, 65%)',
               font: { size: 11 },
-              boxWidth: 10,
+              boxWidth: myIsOverlay ? 16 : 10,
+              boxHeight: myIsOverlay ? 2 : 10,
+              usePointStyle: myIsOverlay,
+              pointStyle: myIsOverlay ? 'line' : undefined,
+              pointStyleWidth: myIsOverlay ? 16 : undefined,
+              sort: function (a, b) {
+                return a.text.localeCompare(b.text);
+              },
               filter: function (myLegendItem, myChartData) {
                 const myDs = myChartData.datasets[myLegendItem.datasetIndex];
                 return !myDs || !myDs.isLimitLine;
@@ -377,10 +451,31 @@
             }
           },
           tooltip: {
+            position: 'myFollowCursor',
+            animation: { duration: 0 },
+            usePointStyle: myIsOverlay,
+            boxWidth: myIsOverlay ? 14 : 10,
+            boxHeight: myIsOverlay ? 14 : 10,
+            itemSort: function (a, b) {
+              return a.dataset.label.localeCompare(b.dataset.label);
+            },
             filter: function (myTooltipItem) {
               return !myTooltipItem.dataset || !myTooltipItem.dataset.isLimitLine;
             },
             callbacks: {
+              labelPointStyle: myIsOverlay ? function () {
+                return { pointStyle: 'line', rotation: 0 };
+              } : undefined,
+              labelColor: function (myCtxItem) {
+                const myDs = myCtxItem.dataset;
+                const myBorder = (myDs && myDs.borderColor) ? myDs.borderColor : 'hsl(217, 91%, 60%)';
+                const myFill = (myDs && myDs.backgroundColor) ? myDs.backgroundColor : myBorder;
+                return {
+                  borderColor: myBorder,
+                  backgroundColor: myIsOverlay ? myBorder : myFill,
+                  borderWidth: 2
+                };
+              },
               label: function (myCtxItem) {
                 if (myCtxItem.raw === null || typeof myCtxItem.raw === 'undefined') return '';
                 if (myCtxItem.dataset && myCtxItem.dataset.isLimitLine) return null;
@@ -505,30 +600,35 @@
   }
 
   /**
-   * Render projects and functions breakdown table rows.
+   * Render projects cards and functions breakdown tables.
    * @param {Array<Object>} myProjects - Projects list.
    */
   function myRenderProjectsTable(myProjects) {
-    const myTbody = document.getElementById('myTableProjectsBody');
-    if (!myTbody) return;
+    const myContainer = document.getElementById('myProjectsContainer');
+    if (!myContainer) return;
 
     if (!myProjects || myProjects.length === 0) {
-      myTbody.innerHTML = '<tr><td colspan="9" style="text-align: center; color: var(--my-text-secondary);">Brak zarejestrowanych procesów w wybranym oknie.</td></tr>';
+      myContainer.innerHTML = '<div class="my-card"><p style="text-align: center; color: var(--my-text-secondary); margin: 0;">Brak zarejestrowanych procesów w wybranym oknie.</p></div>';
       return;
     }
 
     let myHtml = '';
     myProjects.forEach(function (myProj) {
+      const myColor = myGetProjectColor_(myProj.projectName);
+      const myFailBadge = (myProj.failCount > 0) ?
+        '<span class="my-badge my-badge-danger">Awarie: <strong>' + myProj.failCount + '</strong></span>' :
+        '<span class="my-badge my-badge-success">0 awarii</span>';
+
+      let myRowsHtml = '';
       myProj.functions.forEach(function (myFn) {
         const myStatusPills = Object.keys(myFn.statuses).map(function (mySt) {
           const myBadgeClass = (mySt === 'FAILED' || mySt === 'TIMED_OUT') ? 'my-badge-danger' : 'my-badge-success';
           return '<span class="my-badge ' + myBadgeClass + '">' + mySt + ': ' + myFn.statuses[mySt] + '</span>';
         }).join(' ');
 
-        myHtml += '<tr>' +
-          '<td><strong>' + myProj.projectName + '</strong></td>' +
+        myRowsHtml += '<tr>' +
           '<td><code>' + myFn.functionName + '</code></td>' +
-          '<td>' + myFn.count + '</td>' +
+          '<td>' + myFn.count.toLocaleString() + '</td>' +
           '<td>' + myFormatDurationClient(myFn.totalSec) + '</td>' +
           '<td>' + myFn.avgSec + 's</td>' +
           '<td>' + myFn.minSec + 's</td>' +
@@ -537,9 +637,42 @@
           '<td>' + myStatusPills + '</td>' +
           '</tr>';
       });
+
+      myHtml += '<div class="my-card" style="margin-bottom: 24px;">' +
+        '<div class="my-project-card-header">' +
+        '<div class="my-project-card-title">' +
+        '<span class="my-project-color-dot" style="background: ' + myColor.border + '; box-shadow: 0 0 8px ' + myColor.border + ';"></span>' +
+        '<span>' + myProj.projectName + '</span>' +
+        '</div>' +
+        '<div class="my-project-card-metrics">' +
+        '<span class="my-badge my-badge-neutral">Wywołania: <strong>' + myProj.count.toLocaleString() + '</strong></span>' +
+        '<span class="my-badge my-badge-neutral">Czas łączny: <strong>' + myFormatDurationClient(myProj.totalSec) + '</strong></span>' +
+        myFailBadge +
+        '</div>' +
+        '</div>' +
+        '<div class="my-table-responsive">' +
+        '<table class="my-table">' +
+        '<thead>' +
+        '<tr>' +
+        '<th>Funkcja</th>' +
+        '<th>Wywołania</th>' +
+        '<th>Czas łączny</th>' +
+        '<th>Średni</th>' +
+        '<th>Min</th>' +
+        '<th>Max</th>' +
+        '<th>P95</th>' +
+        '<th>Statusy</th>' +
+        '</tr>' +
+        '</thead>' +
+        '<tbody>' +
+        myRowsHtml +
+        '</tbody>' +
+        '</table>' +
+        '</div>' +
+        '</div>';
     });
 
-    myTbody.innerHTML = myHtml;
+    myContainer.innerHTML = myHtml;
   }
 
 
@@ -694,7 +827,8 @@
         toIso: myGlobalToIso,
         resolution: myGlobalResolution,
         showDailyLimit: myDailyToggle ? myDailyToggle.checked : true,
-        showPeakLimit: myPeakToggle ? myPeakToggle.checked : true
+        showPeakLimit: myPeakToggle ? myPeakToggle.checked : true,
+        tabScrollPositions: myTabScrollPositions_
       };
       localStorage.setItem(MY_STORAGE_KEY_VIEW_STATE, JSON.stringify(myState));
     } catch (myErr) {
@@ -714,6 +848,10 @@
       if (!myState || typeof myState !== 'object') return false;
 
       let myRestored = false;
+
+      if (myState.tabScrollPositions && typeof myState.tabScrollPositions === 'object') {
+        Object.assign(myTabScrollPositions_, myState.tabScrollPositions);
+      }
 
       if (typeof myState.showDailyLimit === 'boolean') {
         const myDailyToggle = document.getElementById('myToggleDailyQuotaLimitLine');
@@ -770,6 +908,8 @@
       if (myState.activeTab && ['overview', 'projects', 'settings'].includes(myState.activeTab)) {
         mySwitchView(myState.activeTab);
         myRestored = true;
+      } else {
+        mySwitchView('overview');
       }
 
       return myRestored;
@@ -1712,12 +1852,108 @@
     }
   }
 
+  /**
+   * Ensure keyboard focus is captured by the application iframe.
+   */
+  function myEnsureWindowFocus_() {
+    try {
+      window.focus();
+      if (document.body) {
+        document.body.focus();
+      }
+    } catch (myErr) {
+      // Ignore cross-origin frame focus restrictions
+    }
+  }
+
+  const MY_NAV_TABS_LIST = ['overview', 'projects', 'settings'];
+
+  /**
+   * Initialize custom keyboard navigation (PageUp/PageDown for cards, ArrowLeft/ArrowRight for tabs).
+   */
+  function myInitKeyboardNavigation_() {
+    const myKeyHandler = function (myEvent) {
+      const myAllowedKeys = ['PageDown', 'PageUp', 'ArrowLeft', 'ArrowRight'];
+      if (!myAllowedKeys.includes(myEvent.key)) return;
+
+      const myActiveEl = document.activeElement;
+      if (myActiveEl && (
+        myActiveEl.tagName === 'INPUT' ||
+        myActiveEl.tagName === 'TEXTAREA' ||
+        myActiveEl.tagName === 'SELECT' ||
+        myActiveEl.isContentEditable
+      )) {
+        return;
+      }
+
+      if (myEvent.key === 'ArrowRight' || myEvent.key === 'ArrowLeft') {
+        const myCurrentIdx = MY_NAV_TABS_LIST.indexOf(myActiveViewName);
+        if (myCurrentIdx === -1) return;
+        const myStep = (myEvent.key === 'ArrowRight') ? 1 : -1;
+        const myNextIdx = myCurrentIdx + myStep;
+        if (myNextIdx < 0 || myNextIdx >= MY_NAV_TABS_LIST.length) {
+          return;
+        }
+        myEvent.preventDefault();
+        mySwitchView(MY_NAV_TABS_LIST[myNextIdx]);
+        return;
+      }
+
+      const myActiveView = document.querySelector('.my-view.my-active');
+      if (!myActiveView) return;
+
+      const myCards = Array.from(myActiveView.querySelectorAll('.my-card')).filter(function (myCard) {
+        return myCard.offsetParent !== null;
+      });
+      if (myCards.length === 0) return;
+
+      const myThreshold = 35;
+
+      if (myEvent.key === 'PageDown') {
+        const myNextCard = myCards.find(function (myCard) {
+          return myCard.getBoundingClientRect().top > myThreshold;
+        });
+        if (myNextCard) {
+          myEvent.preventDefault();
+          myNextCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      } else if (myEvent.key === 'PageUp') {
+        const myPrevCards = myCards.filter(function (myCard) {
+          return myCard.getBoundingClientRect().top < -myThreshold;
+        });
+        myEvent.preventDefault();
+        if (myPrevCards.length > 0) {
+          const myPrevCard = myPrevCards[myPrevCards.length - 1];
+          myPrevCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        } else {
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+      }
+    };
+
+    window.addEventListener('keydown', myKeyHandler, true);
+  }
+
   // Initial load
   document.addEventListener('DOMContentLoaded', function () {
     myRestoreProjectColors_();
     myRestoreHiddenProjects_();
     myInitDatetimeWheelScrubbing_();
     myInitLimitLineToggles_();
+    myInitKeyboardNavigation_();
+    myEnsureWindowFocus_();
+
+    [100, 400, 1000].forEach(function (myDelay) {
+      setTimeout(myEnsureWindowFocus_, myDelay);
+    });
+
+    window.addEventListener('load', myEnsureWindowFocus_);
+    window.addEventListener('pointerenter', myEnsureWindowFocus_);
+    window.addEventListener('mousemove', function myFocusOnFirstMove_() {
+      myEnsureWindowFocus_();
+      window.removeEventListener('mousemove', myFocusOnFirstMove_);
+    });
+
     const myHasCachedData = myRestoreProcessesFromStorage_();
     const myHasRestoredView = myRestoreViewState_();
     if (!myHasRestoredView) {

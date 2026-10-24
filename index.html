@@ -13,7 +13,7 @@
   <?!= myInclude('styles'); ?>
 </head>
 
-<body>
+<body tabindex="-1">
   <div class="my-container">
     <!-- Main Header -->
     <header class="my-header">
@@ -73,7 +73,7 @@
         <button type="button" class="my-pill-btn" id="myPresetBtnAll"
           onclick="mySetTimeWindowPreset('all')">Wszystko</button>
       </div>
-      <div class="my-time-resolutions" aria-label="Wybór rozdzielczości czasowej">
+      <div class="my-time-resolutions" id="myTimeResolutionsBar" aria-label="Wybór rozdzielczości czasowej">
         <span class="my-kpi-sub" style="margin-right: 4px;">Rozdzielczość:</span>
         <button type="button" class="my-pill-btn my-res-btn my-active-preset" id="myResBtnAuto"
           onclick="mySetResolution('auto')">Auto</button>
@@ -171,29 +171,9 @@
 
     <!-- View: Projects & Functions -->
     <section id="myViewProjects" class="my-view">
-      <div class="my-card">
-        <h2 class="my-section-title">Wykaz projektów i funkcji (Cross-Project Breakdown)</h2>
-        <div class="my-table-responsive">
-          <table class="my-table" id="myTableProjects">
-            <thead>
-              <tr>
-                <th>Projekt</th>
-                <th>Funkcja</th>
-                <th>Wywołania</th>
-                <th>Czas łączny</th>
-                <th>Średni</th>
-                <th>Min</th>
-                <th>Max</th>
-                <th>P95</th>
-                <th>Statusy</th>
-              </tr>
-            </thead>
-            <tbody id="myTableProjectsBody">
-              <tr>
-                <td colspan="9" style="text-align: center; color: var(--my-text-secondary);">Ładowanie danych...</td>
-              </tr>
-            </tbody>
-          </table>
+      <div id="myProjectsContainer">
+        <div class="my-card">
+          <p style="text-align: center; color: var(--my-text-secondary); margin: 0;">Ładowanie danych...</p>
         </div>
       </div>
     </section>

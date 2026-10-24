@@ -26,6 +26,11 @@
     --my-shadow: 0 10px 30px -10px hsla(222, 47%, 5%, 0.6);
   }
 
+  html {
+    scroll-behavior: smooth;
+    scroll-padding-top: 20px;
+  }
+
   * {
     box-sizing: border-box;
     margin: 0;
@@ -42,6 +47,10 @@
     background-image: 
       radial-gradient(circle at 15% 15%, hsla(217, 91%, 60%, 0.08) 0%, transparent 40%),
       radial-gradient(circle at 85% 85%, hsla(142, 71%, 45%, 0.05) 0%, transparent 40%);
+  }
+
+  body:focus {
+    outline: none;
   }
 
   .my-container {
@@ -415,6 +424,42 @@
     background: var(--my-bg-surface);
     color: var(--my-text-secondary);
     border: 1px solid var(--my-border);
+  }
+
+  /* Project Cards in Projects & Functions View */
+  .my-project-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--my-border);
+  }
+
+  .my-project-card-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--my-text-primary);
+  }
+
+  .my-project-color-dot {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .my-project-card-metrics {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
   }
 
   /* Form Elements */
