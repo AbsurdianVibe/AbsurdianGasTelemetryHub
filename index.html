@@ -44,6 +44,24 @@
     <!-- Global Time Window Toolbar -->
     <aside id="myTimeWindowBar" class="my-time-window-bar" aria-label="Globalne sterowanie oknem czasowym">
       <div class="my-time-window-inputs">
+        <div class="my-time-history-controls" style="display: inline-flex; gap: 4px; margin-right: 6px;">
+          <button type="button" id="myBtnUndoTimeWindow" class="my-btn my-btn-secondary"
+            style="padding: 6px 10px; font-size: 13px;" title="Cofnij okno czasowe (Ctrl+Z)"
+            onclick="myUndoTimeWindow()" disabled>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 7v6h6" />
+              <path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13" />
+            </svg>
+          </button>
+          <button type="button" id="myBtnRedoTimeWindow" class="my-btn my-btn-secondary"
+            style="padding: 6px 10px; font-size: 13px;" title="Ponów okno czasowe (Ctrl+Y / Ctrl+Shift+Z)"
+            onclick="myRedoTimeWindow()" disabled>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 7v6h-6" />
+              <path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13" />
+            </svg>
+          </button>
+        </div>
         <span class="my-window-label">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="10" />

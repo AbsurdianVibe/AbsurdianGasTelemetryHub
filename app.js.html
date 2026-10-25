@@ -272,8 +272,12 @@
     const myCtx = myCanvas.getContext('2d');
 
     if (myExistingInstance) {
+      if (myExistingInstance._myDragSelection) {
+        myExistingInstance._myDragSelection = null;
+      }
       myExistingInstance.destroy();
     }
+    myRemoveChartRangeBadgeButtons_();
 
     const myIsOverlay = myChartMode === MY_CHART_MODE.OVERLAY;
     const myLabels = myDailySeries.map(function (d) { return d.dayKey || d.bucketKey; });
@@ -348,6 +352,9 @@
         if (!myElements || !myElements.length || !myEventPosition || typeof myEventPosition.x === 'undefined') {
           return false;
         }
+        if (this.chart && this.chart._myDragSelection && this.chart._myDragSelection.isDragging) {
+          return false;
+        }
         const myChartArea = this.chart && this.chart.chartArea;
         const myRightBoundary = myChartArea ? myChartArea.right : ((this.chart && this.chart.width) || 800);
         const myTooltipWidth = this.width || 180;
@@ -366,6 +373,7 @@
       id: 'myVerticalGuideLine',
       beforeDatasetsDraw: function (myChart) {
         if (!myChart.tooltip) return;
+        if (myChart._myDragSelection && myChart._myDragSelection.isDragging) return;
         const myActive = typeof myChart.tooltip.getActiveElements === 'function'
           ? myChart.tooltip.getActiveElements()
           : myChart.tooltip._active;
@@ -388,13 +396,124 @@
       }
     };
 
-    return new Chart(myCtx, {
+    const myDragSelectionPlugin = {
+      id: 'myDragSelectionPlugin',
+      afterDraw: function (myChart) {
+        const myDrag = myChart._myDragSelection;
+        if (!myDrag || (!myDrag.isDragging && !myDrag.isFrozen)) return;
+
+        const myArea = myChart.chartArea;
+        if (!myArea) return;
+
+        const myXScale = myChart.scales.x;
+        const myLabelsList = myChart.data.labels || [];
+        if (!myLabelsList.length) return;
+
+        const myRawLeft = Math.max(myArea.left, Math.min(myDrag.startX, myDrag.currentX));
+        const myRawRight = Math.min(myArea.right, Math.max(myDrag.startX, myDrag.currentX));
+        if (myRawRight - myRawLeft < 3) return;
+
+        let myStartIdx;
+        let myEndIdx;
+
+        if (myDrag.isFrozen && myDrag.startIdx !== undefined && myDrag.endIdx !== undefined) {
+          myStartIdx = myDrag.startIdx;
+          myEndIdx = myDrag.endIdx;
+        } else {
+          const myIdx1 = Math.round(myXScale.getValueForPixel(myRawLeft));
+          const myIdx2 = Math.round(myXScale.getValueForPixel(myRawRight));
+          myStartIdx = Math.max(0, Math.min(myLabelsList.length - 1, Math.min(myIdx1, myIdx2)));
+          myEndIdx = Math.max(0, Math.min(myLabelsList.length - 1, Math.max(myIdx1, myIdx2)));
+          if (myStartIdx === myEndIdx) {
+            if (myEndIdx < myLabelsList.length - 1) {
+              myEndIdx++;
+            } else if (myStartIdx > 0) {
+              myStartIdx--;
+            }
+          }
+        }
+
+        const myLeft = myXScale.getPixelForValue(myStartIdx);
+        const myRight = myXScale.getPixelForValue(myEndIdx);
+        const myWidth = myRight - myLeft;
+        if (myWidth < 1) return;
+
+        const myCtx = myChart.ctx;
+        myCtx.save();
+
+        myCtx.fillStyle = 'hsla(217, 91%, 60%, 0.18)';
+        myCtx.fillRect(myLeft, myArea.top, myWidth, myArea.bottom - myArea.top);
+
+        myCtx.strokeStyle = 'hsl(217, 91%, 60%)';
+        myCtx.lineWidth = 1.5;
+        myCtx.setLineDash([3, 3]);
+        myCtx.beginPath();
+        myCtx.moveTo(myLeft, myArea.top);
+        myCtx.lineTo(myLeft, myArea.bottom);
+        myCtx.moveTo(myRight, myArea.top);
+        myCtx.lineTo(myRight, myArea.bottom);
+        myCtx.stroke();
+
+        if (myDrag.isFrozen) {
+          const myMidY = (myArea.top + myArea.bottom) / 2;
+          myCtx.fillStyle = 'hsl(217, 91%, 60%)';
+          myCtx.beginPath();
+          if (typeof myCtx.roundRect === 'function') {
+            myCtx.roundRect(myLeft - 2, myMidY - 14, 4, 28, 2);
+            myCtx.roundRect(myRight - 2, myMidY - 14, 4, 28, 2);
+          } else {
+            myCtx.rect(myLeft - 2, myMidY - 14, 4, 28);
+            myCtx.rect(myRight - 2, myMidY - 14, 4, 28);
+          }
+          myCtx.fill();
+        }
+
+        if (!myDrag.isFrozen) {
+          const myBadgeText = (myLabelsList[myStartIdx] || '') + ' → ' + (myLabelsList[myEndIdx] || '') + '  ↵';
+          myCtx.font = '600 11px Inter, sans-serif';
+          const myTextWidth = myCtx.measureText(myBadgeText).width;
+          const myBadgeWidth = myTextWidth + 24;
+          const myBadgeHeight = 24;
+          let myBadgeX = myLeft + (myWidth - myBadgeWidth) / 2;
+          myBadgeX = Math.max(myArea.left + 4, Math.min(myArea.right - myBadgeWidth - 4, myBadgeX));
+          const myBadgeY = myArea.top + 8;
+
+          myCtx.save();
+          myCtx.shadowColor = 'hsla(222, 47%, 5%, 0.6)';
+          myCtx.shadowBlur = 8;
+          myCtx.shadowOffsetY = 3;
+
+          myCtx.fillStyle = 'hsl(222, 40%, 15%)';
+          myCtx.strokeStyle = 'hsla(217, 33%, 30%, 0.8)';
+          myCtx.lineWidth = 1;
+          myCtx.setLineDash([]);
+          myCtx.beginPath();
+          if (typeof myCtx.roundRect === 'function') {
+            myCtx.roundRect(myBadgeX, myBadgeY, myBadgeWidth, myBadgeHeight, 6);
+          } else {
+            myCtx.rect(myBadgeX, myBadgeY, myBadgeWidth, myBadgeHeight);
+          }
+          myCtx.fill();
+          myCtx.stroke();
+          myCtx.restore();
+
+          myCtx.fillStyle = 'hsl(210, 40%, 98%)';
+          myCtx.textAlign = 'center';
+          myCtx.textBaseline = 'middle';
+          myCtx.fillText(myBadgeText, myBadgeX + myBadgeWidth / 2, myBadgeY + myBadgeHeight / 2);
+        }
+
+        myCtx.restore();
+      }
+    };
+
+    const myChartInstance = new Chart(myCtx, {
       type: 'line',
       data: {
         labels: myLabels,
         datasets: myDatasets
       },
-      plugins: [myVerticalGuideLinePlugin],
+      plugins: [myVerticalGuideLinePlugin, myDragSelectionPlugin],
       options: {
         responsive: true,
         maintainAspectRatio: false,
@@ -514,6 +633,310 @@
         }
       }
     });
+
+    myCanvas._myChartInstance = myChartInstance;
+    myCanvas.style.cursor = 'crosshair';
+
+    if (!myCanvas._myDragEventsBound) {
+      myCanvas._myDragEventsBound = true;
+
+      myCanvas.addEventListener('pointerdown', function (myEvt) {
+        const myInst = myCanvas._myChartInstance;
+        if (!myInst || !myInst.chartArea) return;
+        const myRect = myCanvas.getBoundingClientRect();
+        const myX = myEvt.clientX - myRect.left;
+        const myY = myEvt.clientY - myRect.top;
+        const myArea = myInst.chartArea;
+        if (myX < myArea.left || myX > myArea.right || myY < myArea.top || myY > myArea.bottom) {
+          return;
+        }
+
+        const myDrag = myInst._myDragSelection;
+
+        if (myDrag && myDrag.isFrozen) {
+          const myHitEdge = myGetChartSelectionEdge_(myDrag, myX);
+          if (myHitEdge) {
+            const myMinX = Math.min(myDrag.startX, myDrag.currentX);
+            const myMaxX = Math.max(myDrag.startX, myDrag.currentX);
+            myCanvas.setPointerCapture(myEvt.pointerId);
+            myDrag.isDragging = true;
+            myDrag.isFrozen = false;
+            myDrag.isResizing = myHitEdge;
+            myDrag.pointerId = myEvt.pointerId;
+            myDrag.startX = (myHitEdge === 'left') ? myMaxX : myMinX;
+            myDrag.currentX = myX;
+            myRemoveChartRangeBadgeButtons_();
+            return;
+          }
+        }
+
+        myDismissChartDragSelection_();
+        myCanvas.setPointerCapture(myEvt.pointerId);
+        myInst._myDragSelection = {
+          isDragging: true,
+          isFrozen: false,
+          isResizing: null,
+          pointerId: myEvt.pointerId,
+          startX: myX,
+          currentX: myX
+        };
+        if (myInst.tooltip) {
+          myInst.tooltip.setActiveElements([], { x: 0, y: 0 });
+        }
+      });
+
+      myCanvas.addEventListener('pointermove', function (myEvt) {
+        const myInst = myCanvas._myChartInstance;
+        if (!myInst || !myInst.chartArea) return;
+        const myRect = myCanvas.getBoundingClientRect();
+        const myX = Math.max(myInst.chartArea.left, Math.min(myInst.chartArea.right, myEvt.clientX - myRect.left));
+        const myDrag = myInst._myDragSelection;
+
+        if (myDrag && myDrag.isDragging) {
+          myDrag.currentX = myX;
+          if (myInst.tooltip) {
+            myInst.tooltip.setActiveElements([], { x: 0, y: 0 });
+          }
+          myInst.render();
+          return;
+        }
+
+        if (myDrag && myDrag.isFrozen) {
+          const myHitEdge = myGetChartSelectionEdge_(myDrag, myX);
+          myCanvas.style.cursor = myHitEdge ? 'ew-resize' : 'crosshair';
+          return;
+        }
+
+        myCanvas.style.cursor = 'crosshair';
+      });
+
+      const myEndDragHandler = function (myEvt) {
+        const myInst = myCanvas._myChartInstance;
+        if (!myInst || !myInst._myDragSelection || !myInst._myDragSelection.isDragging) return;
+        const myDrag = myInst._myDragSelection;
+        try {
+          myCanvas.releasePointerCapture(myEvt.pointerId);
+        } catch (myErr) { /* ignore */ }
+        myDrag.isDragging = false;
+        myDrag.isResizing = null;
+
+        const myRect = myCanvas.getBoundingClientRect();
+        const myX = Math.max(myInst.chartArea.left, Math.min(myInst.chartArea.right, myEvt.clientX - myRect.left));
+        const myMinPixel = Math.min(myDrag.startX, myX);
+        const myMaxPixel = Math.max(myDrag.startX, myX);
+        const myDist = myMaxPixel - myMinPixel;
+
+        const myLabelsList = myInst.data.labels || [];
+        if (myDist >= 15 && myLabelsList.length > 1) {
+          const myXScale = myInst.scales.x;
+          const myIdx1 = Math.round(myXScale.getValueForPixel(myMinPixel));
+          const myIdx2 = Math.round(myXScale.getValueForPixel(myMaxPixel));
+          let myStartIdx = Math.max(0, Math.min(myLabelsList.length - 1, Math.min(myIdx1, myIdx2)));
+          let myEndIdx = Math.max(0, Math.min(myLabelsList.length - 1, Math.max(myIdx1, myIdx2)));
+
+          if (myStartIdx === myEndIdx) {
+            if (myEndIdx < myLabelsList.length - 1) {
+              myEndIdx++;
+            } else if (myStartIdx > 0) {
+              myStartIdx--;
+            }
+          }
+
+          const mySnappedLeft = myXScale.getPixelForValue(myStartIdx);
+          const mySnappedRight = myXScale.getPixelForValue(myEndIdx);
+
+          myDrag.isFrozen = true;
+          myDrag.startX = mySnappedLeft;
+          myDrag.currentX = mySnappedRight;
+          myDrag.startIdx = myStartIdx;
+          myDrag.endIdx = myEndIdx;
+          myCanvas.style.cursor = 'crosshair';
+          myInst.render();
+
+          myShowChartRangeBadgeButton_(myCanvas, myInst, myStartIdx, myEndIdx);
+          return;
+        }
+
+        myInst._myDragSelection = null;
+        myCanvas.style.cursor = 'crosshair';
+        myInst.render();
+      };
+
+      myCanvas.addEventListener('pointerup', myEndDragHandler);
+      myCanvas.addEventListener('pointercancel', myEndDragHandler);
+
+      myCanvas.addEventListener('pointerleave', function () {
+        const myInst = myCanvas._myChartInstance;
+        if (!myInst || !myInst._myDragSelection || !myInst._myDragSelection.isDragging) {
+          myCanvas.style.cursor = 'crosshair';
+        }
+      });
+    }
+
+    return myChartInstance;
+  }
+
+  /**
+   * Determine whether horizontal coordinate hits an active selection edge.
+   * @param {Object} myDrag - Selection state.
+   * @param {number} myX - Pointer X coordinate.
+   * @param {number} [myThreshold=8] - Hit test distance tolerance in px.
+   * @return {'left'|'right'|null} Hit edge identifier or null.
+   */
+  function myGetChartSelectionEdge_(myDrag, myX, myThreshold = 8) {
+    if (!myDrag || !myDrag.isFrozen) return null;
+    const myMinX = Math.min(myDrag.startX, myDrag.currentX);
+    const myMaxX = Math.max(myDrag.startX, myDrag.currentX);
+    if (Math.abs(myX - myMinX) <= myThreshold) return 'left';
+    if (Math.abs(myX - myMaxX) <= myThreshold) return 'right';
+    return null;
+  }
+
+  /**
+   * Remove any range badge buttons from DOM.
+   */
+  function myRemoveChartRangeBadgeButtons_() {
+    document.querySelectorAll('.my-chart-range-badge').forEach(function (myEl) {
+      myEl.remove();
+    });
+  }
+
+  /**
+   * Dismiss active drag selection and restore cursor.
+   * @param {Object} [myTargetChart] - Optional chart to dismiss.
+   */
+  function myDismissChartDragSelection_(myTargetChart) {
+    const myCharts = myTargetChart ? [myTargetChart] : [myDailyQuotaChartInstance, myPeakDurationChartInstance];
+    myCharts.forEach(function (myInst) {
+      if (!myInst) return;
+      if (myInst.canvas) {
+        myInst.canvas.style.cursor = 'crosshair';
+      }
+      if (myInst._myDragSelection) {
+        myInst._myDragSelection = null;
+        myInst.render();
+      }
+    });
+    myRemoveChartRangeBadgeButtons_();
+  }
+
+  /**
+   * Render interactive range badge button on top of frozen selection.
+   * @param {HTMLCanvasElement} myCanvas - Chart canvas element.
+   * @param {Object} myChart - Chart.js instance.
+   * @param {number} myStartIdx - Start bucket index.
+   * @param {number} myEndIdx - End bucket index.
+   */
+  function myShowChartRangeBadgeButton_(myCanvas, myChart, myStartIdx, myEndIdx) {
+    const myWrapper = myCanvas.parentElement;
+    if (!myWrapper) return;
+
+    myRemoveChartRangeBadgeButtons_();
+
+    const myDrag = myChart._myDragSelection;
+    if (!myDrag) return;
+
+    const myArea = myChart.chartArea;
+    const myXScale = myChart.scales.x;
+    const myLeft = myXScale.getPixelForValue(myStartIdx);
+    const myRight = myXScale.getPixelForValue(myEndIdx);
+    const myWidth = myRight - myLeft;
+
+    const myLabelsList = myChart.data.labels || [];
+    const myText = (myLabelsList[myStartIdx] || '') + ' → ' + (myLabelsList[myEndIdx] || '') + '  ↵';
+
+    const myBtn = document.createElement('button');
+    myBtn.type = 'button';
+    myBtn.className = 'my-chart-range-badge';
+    myBtn.title = 'Kliknij lub wciśnij Enter, aby zastosować zakres';
+    myBtn.innerText = myText;
+
+    const myCanvasWidth = myCanvas.offsetWidth || myArea.right;
+    const myCenterX = myLeft + myWidth / 2;
+    const myClampedLeft = Math.max(90, Math.min(myCanvasWidth - 90, myCenterX));
+    myBtn.style.left = myClampedLeft + 'px';
+    myBtn.style.top = (myArea.top + 8) + 'px';
+
+    myBtn.addEventListener('pointerdown', function (myEvt) {
+      myEvt.stopPropagation();
+    });
+
+    myBtn.addEventListener('click', function (myEvt) {
+      myEvt.stopPropagation();
+      myCommitActiveChartSelection_(myChart);
+    });
+
+    myWrapper.appendChild(myBtn);
+  }
+
+  /**
+   * Commit active chart selection and apply corresponding time window.
+   * @param {Object} [myTargetChart] - Optional chart instance.
+   * @return {boolean} True if active selection was committed.
+   */
+  function myCommitActiveChartSelection_(myTargetChart) {
+    const myCharts = myTargetChart ? [myTargetChart] : [myDailyQuotaChartInstance, myPeakDurationChartInstance];
+    for (let myI = 0; myI < myCharts.length; myI++) {
+      const myInst = myCharts[myI];
+      if (myInst && myInst._myDragSelection && myInst._myDragSelection.isFrozen) {
+        const myDrag = myInst._myDragSelection;
+        const myLabelsList = myInst.data.labels || [];
+        const myStartIdx = myDrag.startIdx;
+        const myEndIdx = myDrag.endIdx;
+        myDismissChartDragSelection_(myInst);
+        myApplyTimeWindowFromChartIndices_(myLabelsList, myStartIdx, myEndIdx);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Parse bucket label string into local Date instance.
+   * @param {string} myKey - Bucket label key.
+   * @return {Date} Date instance.
+   */
+  function myParseBucketKeyToDate_(myKey) {
+    if (!myKey) return new Date();
+    if (myKey.length === 10) {
+      return new Date(myKey + 'T00:00:00');
+    }
+    return new Date(myKey.replace(' ', 'T') + ':00');
+  }
+
+  /**
+   * Apply global time window from chart drag selection indices.
+   * @param {Array<string>} myLabels - Chart x-axis label keys.
+   * @param {number} myStartIdx - Start bucket index.
+   * @param {number} myEndIdx - End bucket index.
+   */
+  function myApplyTimeWindowFromChartIndices_(myLabels, myStartIdx, myEndIdx) {
+    if (!myLabels || myLabels.length === 0) return;
+    const myStartBucket = myLabels[myStartIdx];
+    const myEndBucket = myLabels[myEndIdx];
+    if (!myStartBucket || !myEndBucket) return;
+
+    const myStartDate = myParseBucketKeyToDate_(myStartBucket);
+    let myEndDate = myParseBucketKeyToDate_(myEndBucket);
+
+    if (myEndBucket.length === 10) {
+      myEndDate.setHours(23, 59, 59, 999);
+    } else {
+      const myStepMs = myGetClientBucketStepMs_(myGlobalResolution || '1h');
+      myEndDate = new Date(myEndDate.getTime() + myStepMs - 1000);
+    }
+
+    const myNow = new Date();
+    if (myEndDate.getTime() > myNow.getTime()) {
+      myEndDate = myNow;
+    }
+
+    const myFromEl = document.getElementById('myInputTimeFrom');
+    const myToEl = document.getElementById('myInputTimeTo');
+    if (myFromEl) myFromEl.value = myToDatetimeInputValue(myStartDate);
+    if (myToEl) myToEl.value = myToDatetimeInputValue(myEndDate);
+
+    myApplyTimeWindow();
   }
 
   /**
@@ -972,6 +1395,7 @@
     mySaveViewState_();
 
     myLoadDashboard(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
+    myRecordTimeWindowHistory_();
   }
 
   /**
@@ -1105,6 +1529,109 @@
 
     mySaveViewState_();
     myLoadDashboard(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
+    myRecordTimeWindowHistory_();
+  }
+
+  const MY_TIME_WINDOW_HISTORY_MAX = 50;
+  const myTimeWindowHistory_ = [];
+  let myTimeWindowHistoryIndex_ = -1;
+  let myIsNavigatingHistory_ = false;
+
+  /**
+   * Update disabled states for undo and redo buttons.
+   */
+  function myUpdateTimeHistoryButtons_() {
+    const myBtnUndo = document.getElementById('myBtnUndoTimeWindow');
+    const myBtnRedo = document.getElementById('myBtnRedoTimeWindow');
+    if (myBtnUndo) {
+      myBtnUndo.disabled = (myTimeWindowHistoryIndex_ <= 0);
+    }
+    if (myBtnRedo) {
+      myBtnRedo.disabled = (myTimeWindowHistoryIndex_ >= myTimeWindowHistory_.length - 1);
+    }
+  }
+
+  /**
+   * Record current time window state into history stack.
+   */
+  function myRecordTimeWindowHistory_() {
+    if (myIsNavigatingHistory_) return;
+
+    const myFromEl = document.getElementById('myInputTimeFrom');
+    const myToEl = document.getElementById('myInputTimeTo');
+    const myNewState = {
+      fromIso: myGlobalFromIso,
+      toIso: myGlobalToIso,
+      fromVal: myFromEl ? myFromEl.value : '',
+      toVal: myToEl ? myToEl.value : '',
+      presetDays: myGlobalPresetDays
+    };
+
+    if (myTimeWindowHistoryIndex_ >= 0) {
+      const myCurrent = myTimeWindowHistory_[myTimeWindowHistoryIndex_];
+      if (myCurrent && myCurrent.fromIso === myNewState.fromIso && myCurrent.toIso === myNewState.toIso) {
+        return;
+      }
+    }
+
+    myTimeWindowHistory_.splice(myTimeWindowHistoryIndex_ + 1);
+    myTimeWindowHistory_.push(myNewState);
+    if (myTimeWindowHistory_.length > MY_TIME_WINDOW_HISTORY_MAX) {
+      myTimeWindowHistory_.shift();
+    }
+    myTimeWindowHistoryIndex_ = myTimeWindowHistory_.length - 1;
+    myUpdateTimeHistoryButtons_();
+  }
+
+  /**
+   * Undo to previous time window state.
+   */
+  function myUndoTimeWindow() {
+    if (myTimeWindowHistoryIndex_ <= 0) return;
+    myTimeWindowHistoryIndex_--;
+    myApplyHistoryState_(myTimeWindowHistory_[myTimeWindowHistoryIndex_]);
+    myUpdateTimeHistoryButtons_();
+  }
+
+  /**
+   * Redo to next time window state.
+   */
+  function myRedoTimeWindow() {
+    if (myTimeWindowHistoryIndex_ >= myTimeWindowHistory_.length - 1) return;
+    myTimeWindowHistoryIndex_++;
+    myApplyHistoryState_(myTimeWindowHistory_[myTimeWindowHistoryIndex_]);
+    myUpdateTimeHistoryButtons_();
+  }
+
+  /**
+   * Apply time window state from history stack.
+   * @param {Object} myState - Historic time window snapshot.
+   */
+  function myApplyHistoryState_(myState) {
+    if (!myState) return;
+    myIsNavigatingHistory_ = true;
+    try {
+      myGlobalFromIso = myState.fromIso;
+      myGlobalToIso = myState.toIso;
+      myGlobalPresetDays = myState.presetDays;
+
+      const myFromEl = document.getElementById('myInputTimeFrom');
+      const myToEl = document.getElementById('myInputTimeTo');
+      if (myFromEl) myFromEl.value = myState.fromVal;
+      if (myToEl) myToEl.value = myState.toVal;
+
+      myAppliedFromInputValue_ = myState.fromVal;
+      myAppliedToInputValue_ = myState.toVal;
+
+      myHighlightPresetBtn_(myState.presetDays);
+      myUpdateTimeWindowInputBounds_();
+      myCheckTimeWindowDirtyState_();
+
+      mySaveViewState_();
+      myLoadDashboard(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
+    } finally {
+      myIsNavigatingHistory_ = false;
+    }
   }
 
   let myCachedMetricsBounds_ = null;
@@ -1873,9 +2400,6 @@
    */
   function myInitKeyboardNavigation_() {
     const myKeyHandler = function (myEvent) {
-      const myAllowedKeys = ['PageDown', 'PageUp', 'ArrowLeft', 'ArrowRight'];
-      if (!myAllowedKeys.includes(myEvent.key)) return;
-
       const myActiveEl = document.activeElement;
       if (myActiveEl && (
         myActiveEl.tagName === 'INPUT' ||
@@ -1885,6 +2409,34 @@
       )) {
         return;
       }
+
+      if (myEvent.ctrlKey || myEvent.metaKey) {
+        if ((myEvent.key === 'z' || myEvent.key === 'Z') && !myEvent.shiftKey) {
+          myEvent.preventDefault();
+          myUndoTimeWindow();
+          return;
+        }
+        if ((myEvent.key === 'y' || myEvent.key === 'Y') || ((myEvent.key === 'z' || myEvent.key === 'Z') && myEvent.shiftKey)) {
+          myEvent.preventDefault();
+          myRedoTimeWindow();
+          return;
+        }
+      }
+
+      if (myEvent.key === 'Escape') {
+        myDismissChartDragSelection_();
+        return;
+      }
+
+      if (myEvent.key === 'Enter') {
+        if (myCommitActiveChartSelection_()) {
+          myEvent.preventDefault();
+          return;
+        }
+      }
+
+      const myAllowedKeys = ['PageDown', 'PageUp', 'ArrowLeft', 'ArrowRight'];
+      if (!myAllowedKeys.includes(myEvent.key)) return;
 
       if (myEvent.key === 'ArrowRight' || myEvent.key === 'ArrowLeft') {
         const myCurrentIdx = MY_NAV_TABS_LIST.indexOf(myActiveViewName);
@@ -1958,6 +2510,8 @@
     const myHasRestoredView = myRestoreViewState_();
     if (!myHasRestoredView) {
       mySetTimeWindowPreset(30);
+    } else {
+      myRecordTimeWindowHistory_();
     }
     myUpdateTimeWindowInputBounds_();
     myValidateAndClampInputs_();

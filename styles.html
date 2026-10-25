@@ -369,6 +369,40 @@
     width: 100%;
   }
 
+  .my-chart-range-badge {
+    position: absolute;
+    transform: translateX(-50%);
+    background: var(--my-bg-surface);
+    border: 1px solid var(--my-border);
+    color: var(--my-text-primary);
+    font-size: 11px;
+    font-weight: 600;
+    font-family: inherit;
+    padding: 5px 12px;
+    border-radius: var(--my-radius-sm);
+    cursor: pointer;
+    z-index: 15;
+    white-space: nowrap;
+    user-select: none;
+    box-shadow: var(--my-shadow);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.2s ease;
+  }
+
+  .my-chart-range-badge:hover {
+    color: var(--my-text-primary);
+    background: var(--my-bg-card-hover);
+    border-color: var(--my-border-focus);
+  }
+
+  .my-chart-range-badge:active {
+    background: var(--my-bg-surface);
+    border-color: var(--my-accent);
+  }
+
+
   /* Data Tables */
   .my-table-responsive {
     overflow-x: auto;
