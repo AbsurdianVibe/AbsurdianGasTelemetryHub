@@ -92,6 +92,22 @@
   }
 
   /**
+   * Format duration in seconds to fixed-width MM:SS.0s mask.
+   * @param {number} mySec - Duration in seconds.
+   * @return {string} Formatted duration with mask 00:00.0s.
+   */
+  function myFormatDurationFixed_(mySec) {
+    if (!mySec || isNaN(mySec)) return '00:00.0s';
+    const myTotalTenths = Math.round(Math.max(0, Number(mySec)) * 10);
+    const myTenths = myTotalTenths % 10;
+    const myTotalSec = Math.floor(myTotalTenths / 10);
+    const mySeconds = myTotalSec % 60;
+    const myMins = Math.floor(myTotalSec / 60);
+    const myPad2 = function (n) { return (n < 10) ? '0' + n : '' + n; };
+    return myPad2(myMins) + ':' + myPad2(mySeconds) + '.' + myTenths + 's';
+  }
+
+  /**
    * Render KPI summary cards and progress bars.
    * @param {Object} mySummary - Summary metrics object.
    */
@@ -298,6 +314,7 @@
 
     const myDatasets = myOrderedProjects.map(function (myProjName) {
       const myColor = myGetProjectColor_(myProjName);
+      const myBridgeColor = myColor.border.replace('hsl(', 'hsla(').replace(')', ', 0.3)');
       const myData = myDailySeries.map(function (myDay) {
         const myMap = myDay[myProjectFieldKey];
         if (!myMap || typeof myMap[myProjName] === 'undefined') {
@@ -317,8 +334,30 @@
         fill: !myIsOverlay,
         tension: 0.1,
         borderWidth: 2,
-        pointRadius: myLabels.length > 50 ? 0 : 2,
-        spanGaps: false,
+        pointRadius: myIsOverlay ? 1 : function (myCtx) {
+          return (myCtx && myCtx.raw > 0) ? (myLabels.length > 50 ? 0 : 2) : 0;
+        },
+        pointHoverRadius: myIsOverlay ? undefined : function (myCtx) {
+          return (myCtx && myCtx.raw > 0) ? 4 : 0;
+        },
+        spanGaps: myIsOverlay,
+        segment: myIsOverlay ? {
+          borderColor: function (myCtx) {
+            const myIsBridge = Boolean(
+              (myCtx.p0 && myCtx.p0.skip) ||
+              (myCtx.p1 && myCtx.p1.skip) ||
+              (typeof myCtx.p0DataIndex === 'number' && typeof myCtx.p1DataIndex === 'number' && Math.abs(myCtx.p1DataIndex - myCtx.p0DataIndex) > 1)
+            );
+            return myIsBridge ? myBridgeColor : undefined;
+          }
+        } : {
+          borderColor: function (myCtx) {
+            const myVal0 = (typeof myCtx.p0DataIndex === 'number') ? myData[myCtx.p0DataIndex] : 0;
+            const myVal1 = (typeof myCtx.p1DataIndex === 'number') ? myData[myCtx.p1DataIndex] : 0;
+            const myIsZeroSegment = (myVal0 <= 0 && myVal1 <= 0);
+            return myIsZeroSegment ? 'transparent' : undefined;
+          }
+        },
         stack: myIsOverlay ? undefined : 'myProjectStack',
         hidden: !!myHiddenProjects_[myProjName]
       };
@@ -507,13 +546,58 @@
       }
     };
 
+    const myChartAreaBorderPlugin = {
+      id: 'myChartAreaBorder',
+      afterDatasetsDraw: function (myChart) {
+        const myChartArea = myChart.chartArea;
+        if (!myChartArea) return;
+        const myCtx = myChart.ctx;
+        myCtx.save();
+        myCtx.strokeStyle = 'hsla(217, 33%, 45%, 0.8)';
+        myCtx.lineWidth = 1;
+        myCtx.setLineDash([]);
+        myCtx.strokeRect(
+          Math.floor(myChartArea.left) + 0.5,
+          Math.floor(myChartArea.top) + 0.5,
+          Math.floor(myChartArea.width),
+          Math.floor(myChartArea.height)
+        );
+        myCtx.restore();
+      }
+    };
+
+    const myTooltipDividerPlugin = {
+      id: 'myTooltipDivider',
+      afterTooltipDraw: function (myChart, myArgs) {
+        const myTooltip = myArgs && myArgs.tooltip;
+        if (!myTooltip || myTooltip.opacity === 0) return;
+        if (!myTooltip.footer || !myTooltip.footer.length) return;
+
+        const myOpts = myTooltip.options || {};
+        const myPad = (typeof myOpts.padding === 'number') ? myOpts.padding : 6;
+        const myMarginTop = (typeof myOpts.footerMarginTop === 'number') ? myOpts.footerMarginTop : 8;
+        const myLineHeight = 14;
+        const myY = Math.round(myTooltip.y + myTooltip.height - myPad - myLineHeight - (myMarginTop / 2)) + 0.5;
+
+        const myCtx = myChart.ctx;
+        myCtx.save();
+        myCtx.strokeStyle = 'hsla(217, 33%, 60%, 0.7)';
+        myCtx.lineWidth = 1;
+        myCtx.beginPath();
+        myCtx.moveTo(myTooltip.x + myPad, myY);
+        myCtx.lineTo(myTooltip.x + myTooltip.width - myPad, myY);
+        myCtx.stroke();
+        myCtx.restore();
+      }
+    };
+
     const myChartInstance = new Chart(myCtx, {
       type: 'line',
       data: {
         labels: myLabels,
         datasets: myDatasets
       },
-      plugins: [myVerticalGuideLinePlugin, myDragSelectionPlugin],
+      plugins: [myVerticalGuideLinePlugin, myDragSelectionPlugin, myChartAreaBorderPlugin, myTooltipDividerPlugin],
       options: {
         responsive: true,
         maintainAspectRatio: false,
@@ -579,7 +663,9 @@
               return a.dataset.label.localeCompare(b.dataset.label);
             },
             filter: function (myTooltipItem) {
-              return !myTooltipItem.dataset || !myTooltipItem.dataset.isLimitLine;
+              if (!myTooltipItem.dataset || myTooltipItem.dataset.isLimitLine) return false;
+              if (!myIsOverlay && (!myTooltipItem.raw || myTooltipItem.raw <= 0)) return false;
+              return true;
             },
             callbacks: {
               labelPointStyle: myIsOverlay ? function () {
@@ -597,10 +683,22 @@
               },
               label: function (myCtxItem) {
                 if (myCtxItem.raw === null || typeof myCtxItem.raw === 'undefined') return '';
+                if (!myIsOverlay && myCtxItem.raw <= 0) return null;
                 if (myCtxItem.dataset && myCtxItem.dataset.isLimitLine) return null;
                 const myFnName = (myIsOverlay && myCtxItem.dataset.fnNames) ? myCtxItem.dataset.fnNames[myCtxItem.dataIndex] : '';
                 const myFnSuffix = myFnName ? ' (' + myFnName + ')' : '';
-                return ' ' + myCtxItem.dataset.label + myFnSuffix + ': ' + myFormatDurationClient(myCtxItem.raw);
+                return ' ' + myFormatDurationFixed_(myCtxItem.raw) + ' - ' + myCtxItem.dataset.label + myFnSuffix;
+              },
+              footer: function (myTooltipItems) {
+                if (myIsOverlay || !myTooltipItems || !myTooltipItems.length) return '';
+                let myTotalSec = 0;
+                myTooltipItems.forEach(function (myIt) {
+                  if (myIt && typeof myIt.raw === 'number') {
+                    myTotalSec += myIt.raw;
+                  }
+                });
+                if (myTotalSec <= 0) return '';
+                return myFormatDurationFixed_(myTotalSec) + ' - Suma';
               }
             }
           }
