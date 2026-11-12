@@ -641,6 +641,29 @@
     box-shadow: 0 0 0 2px var(--my-accent-glow);
   }
 
+  .my-btn-link-window {
+    padding: 7px 9px;
+    font-size: 13px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--my-radius-sm);
+    color: var(--my-text-secondary);
+    transition: all 0.2s ease;
+  }
+
+  .my-btn-link-window:hover {
+    color: var(--my-text-primary);
+    border-color: var(--my-border-focus);
+  }
+
+  .my-btn-link-window.my-active {
+    color: var(--my-accent);
+    background: hsla(217, 91%, 60%, 0.15);
+    border-color: var(--my-accent);
+    box-shadow: 0 0 8px var(--my-accent-glow);
+  }
+
   .my-time-presets,
   .my-time-resolutions {
     display: flex;

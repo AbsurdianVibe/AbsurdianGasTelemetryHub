@@ -1803,26 +1803,168 @@
   }
 
   /**
-   * Adjust date by segment and delta.
-   * @param {Date} myDate - Target date.
+   * Adjust date by segment using isolated modular arithmetic without cascading.
+   * @param {Date} myDate - Target date instance.
    * @param {string} mySegment - Target segment (day, month, year, hour, minute).
-   * @param {number} myDelta - Delta (+1, -1, +5, etc).
-   * @return {Date} Modified date.
+   * @param {number} myDelta - Step delta (+1, -1, +5, -5).
+   * @return {Date} Modified date instance.
    */
   function myAdjustDateBySegment_(myDate, mySegment, myDelta) {
     const myNewDate = new Date(myDate.getTime());
-    if (mySegment === 'day') {
-      myNewDate.setDate(myNewDate.getDate() + myDelta);
-    } else if (mySegment === 'month') {
-      myNewDate.setMonth(myNewDate.getMonth() + myDelta);
-    } else if (mySegment === 'year') {
-      myNewDate.setFullYear(myNewDate.getFullYear() + myDelta);
-    } else if (mySegment === 'hour') {
-      myNewDate.setHours(myNewDate.getHours() + myDelta);
-    } else if (mySegment === 'minute') {
-      myNewDate.setMinutes(myNewDate.getMinutes() + myDelta);
+
+    if (mySegment === 'minute') {
+      const myNextMin = ((myDate.getMinutes() + myDelta) % 60 + 60) % 60;
+      myNewDate.setMinutes(myNextMin);
+      return myNewDate;
     }
+
+    if (mySegment === 'hour') {
+      const myNextHour = ((myDate.getHours() + myDelta) % 24 + 24) % 24;
+      myNewDate.setHours(myNextHour);
+      return myNewDate;
+    }
+
+    if (mySegment === 'day') {
+      const myDaysInMonth = new Date(myDate.getFullYear(), myDate.getMonth() + 1, 0).getDate();
+      const myNextDay = (((myDate.getDate() - 1 + myDelta) % myDaysInMonth + myDaysInMonth) % myDaysInMonth) + 1;
+      myNewDate.setDate(myNextDay);
+      return myNewDate;
+    }
+
+    if (mySegment === 'month') {
+      const myNextMonth = ((myDate.getMonth() + myDelta) % 12 + 12) % 12;
+      const myMaxDays = new Date(myDate.getFullYear(), myNextMonth + 1, 0).getDate();
+      myNewDate.setDate(1);
+      myNewDate.setMonth(myNextMonth);
+      myNewDate.setDate(Math.min(myDate.getDate(), myMaxDays));
+      return myNewDate;
+    }
+
+    if (mySegment === 'year') {
+      const myNextYear = myDate.getFullYear() + myDelta;
+      const myMaxDays = new Date(myNextYear, myDate.getMonth() + 1, 0).getDate();
+      myNewDate.setDate(1);
+      myNewDate.setFullYear(myNextYear);
+      myNewDate.setDate(Math.min(myDate.getDate(), myMaxDays));
+      return myNewDate;
+    }
+
     return myNewDate;
+  }
+
+  const MY_STORAGE_KEY_TIME_WINDOW_LINKED = 'myGasTelemetryHub_timeWindowLinked';
+  const MY_SVG_CHAIN_ENDS =
+    '<path d="M 0 16.9 H 2 A 6.9 6.9 0 0 0 4.07 16.58 A 11.5 11.5 0 0 0 6.35 19.01 A 10 10 0 0 1 2 20 H 0 Z" />' +
+    '<path d="M 38 3.1 H 36 A 6.9 6.9 0 0 0 33.93 3.42 A 11.5 11.5 0 0 0 31.65 0.99 A 10 10 0 0 1 36 0 H 38 Z" />' +
+    '<path d="M 0 0 H 2 A 10 10 0 0 1 10.83 14.69 A 5.4 5.4 0 0 1 8.55 12.16 A 6.9 6.9 0 0 0 2 3.1 H 0 Z" />' +
+    '<path d="M 38 20 H 36 A 10 10 0 0 1 27.17 5.31 A 5.4 5.4 0 0 1 29.45 7.84 A 6.9 6.9 0 0 0 36 16.9 H 38 Z" />';
+  const MY_SVG_CHAIN_CENTER_LINKED =
+    '<path d="M 4.67 5.31 A 5.4 5.4 0 0 1 6.95 7.84 A 6.9 6.9 0 0 0 13.5 16.9 H 24.5 A 6.9 6.9 0 0 0 26.57 16.58 A 11.5 11.5 0 0 0 28.85 19.01 A 10 10 0 0 1 24.5 20 H 13.5 A 10 10 0 0 1 4.67 5.31 Z" />' +
+    '<path d="M 33.33 14.69 A 5.4 5.4 0 0 1 31.05 12.16 A 6.9 6.9 0 0 0 24.5 3.1 H 13.5 A 6.9 6.9 0 0 0 11.43 3.42 A 11.5 11.5 0 0 0 9.15 0.99 A 10 10 0 0 1 13.5 0 H 24.5 A 10 10 0 0 1 33.33 14.69 Z" />';
+  const MY_SVG_CHAIN_CENTER_UNLINKED =
+    '<path d="M 4.67 5.31 A 5.4 5.4 0 0 1 6.95 7.84 A 6.9 6.9 0 0 0 13.5 16.9 H 17 V 20 H 13.5 A 10 10 0 0 1 4.67 5.31 Z" />' +
+    '<path d="M 9.15 0.99 A 10 10 0 0 1 13.5 0 H 17 V 3.1 H 13.5 A 6.9 6.9 0 0 0 11.43 3.42 A 11.5 11.5 0 0 0 9.15 0.99 Z" />' +
+    '<path d="M 33.33 14.69 A 5.4 5.4 0 0 1 31.05 12.16 A 6.9 6.9 0 0 0 24.5 3.1 H 21 V 0 H 24.5 A 10 10 0 0 1 33.33 14.69 Z" />' +
+    '<path d="M 28.85 19.01 A 10 10 0 0 1 24.5 20 H 21 V 16.9 H 24.5 A 6.9 6.9 0 0 0 26.57 16.58 A 11.5 11.5 0 0 0 28.85 19.01 Z" />';
+
+  let myIsTimeWindowLinked_ = false;
+
+  /**
+   * Update visual appearance and accessibility attributes for time window link button.
+   */
+  function myUpdateTimeWindowLinkIcon_() {
+    const myBtn = document.getElementById('myBtnLinkTimeWindow');
+    if (!myBtn) return;
+    myBtn.innerHTML = '<svg id="myIconLinkTimeWindow" width="27" height="14" viewBox="0 0 38 20" fill="currentColor" stroke="none" aria-hidden="true">' +
+      MY_SVG_CHAIN_ENDS +
+      (myIsTimeWindowLinked_ ? MY_SVG_CHAIN_CENTER_LINKED : MY_SVG_CHAIN_CENTER_UNLINKED) +
+      '</svg>';
+    myBtn.title = myIsTimeWindowLinked_ ?
+      'Okno czasowe połączone (stała rozpiętość). Kliknij, aby rozłączyć' :
+      'Okno czasowe rozłączone. Kliknij, aby połączyć (stała rozpiętość)';
+    myBtn.setAttribute('aria-pressed', myIsTimeWindowLinked_ ? 'true' : 'false');
+    myBtn.classList.toggle('my-active', myIsTimeWindowLinked_);
+  }
+
+  /**
+   * Restore time window link state from localStorage.
+   */
+  function myRestoreTimeWindowLinkState_() {
+    try {
+      const myStored = localStorage.getItem(MY_STORAGE_KEY_TIME_WINDOW_LINKED);
+      if (myStored !== null) {
+        myIsTimeWindowLinked_ = (myStored === 'true');
+      }
+    } catch (myErr) {
+      myIsTimeWindowLinked_ = false;
+    }
+    myUpdateTimeWindowLinkIcon_();
+  }
+
+  /**
+   * Toggle linked time window state and persist to localStorage.
+   */
+  function myToggleTimeWindowLink() {
+    myIsTimeWindowLinked_ = !myIsTimeWindowLinked_;
+    try {
+      localStorage.setItem(MY_STORAGE_KEY_TIME_WINDOW_LINKED, myIsTimeWindowLinked_ ? 'true' : 'false');
+    } catch (myErr) {
+      // Ignore storage quota
+    }
+    myUpdateTimeWindowLinkIcon_();
+  }
+
+  /**
+   * Sync counterpart datetime input when linked mode is active.
+   * @param {HTMLInputElement} mySourceEl - Changed input element.
+   */
+  function mySyncLinkedTimeWindowInput_(mySourceEl) {
+    if (!myIsTimeWindowLinked_) return;
+
+    const myFromEl = document.getElementById('myInputTimeFrom');
+    const myToEl = document.getElementById('myInputTimeTo');
+    if (!myFromEl || !myToEl) return;
+
+    const myOtherEl = (mySourceEl.id === 'myInputTimeFrom') ? myToEl : myFromEl;
+    const myCurrMs = new Date(mySourceEl.value).getTime();
+    const myOtherMs = new Date(myOtherEl.value).getTime();
+    if (isNaN(myCurrMs) || isNaN(myOtherMs)) return;
+
+    const myPrevMs = mySourceEl._myLastValidDateMs || myCurrMs;
+    const myDeltaMs = myCurrMs - myPrevMs;
+    mySourceEl._myLastValidDateMs = myCurrMs;
+
+    if (myDeltaMs === 0) return;
+
+    const mySpanMs = Math.abs(myOtherMs - myPrevMs);
+    const myNowMs = Date.now();
+    const myRetention = (mySettings_ && mySettings_.retentionDays) ? Number(mySettings_.retentionDays) : 30;
+    const myMinRetentionMs = myNowMs - (myRetention * 86400000);
+
+    let myNextFromMs;
+    let myNextToMs;
+
+    if (mySourceEl.id === 'myInputTimeFrom') {
+      myNextFromMs = myCurrMs;
+      myNextToMs = myNextFromMs + mySpanMs;
+    } else {
+      myNextToMs = myCurrMs;
+      myNextFromMs = myNextToMs - mySpanMs;
+    }
+
+    if (myNextToMs > myNowMs) {
+      myNextToMs = myNowMs;
+      myNextFromMs = myNextToMs - mySpanMs;
+    }
+    if (myNextFromMs < myMinRetentionMs) {
+      myNextFromMs = myMinRetentionMs;
+      myNextToMs = myNextFromMs + mySpanMs;
+    }
+
+    myFromEl.value = myToDatetimeInputValue(new Date(myNextFromMs));
+    myToEl.value = myToDatetimeInputValue(new Date(myNextToMs));
+    myFromEl._myLastValidDateMs = myNextFromMs;
+    myToEl._myLastValidDateMs = myNextToMs;
   }
 
   /**
@@ -1849,26 +1991,41 @@
     const myRetention = (mySettings_ && mySettings_.retentionDays) ? Number(mySettings_.retentionDays) : 30;
     const myMinRetentionDate = new Date(myNow.getTime() - (myRetention * 86400000));
 
-    let myMinBound = myMinRetentionDate;
-    let myMaxBound = myNow;
-
     const myFromEl = document.getElementById('myInputTimeFrom');
     const myToEl = document.getElementById('myInputTimeTo');
 
-    if (myInputEl.id === 'myInputTimeFrom') {
-      if (myToEl && myToEl.value) {
-        const myToDate = new Date(myToEl.value);
-        if (!isNaN(myToDate.getTime())) myMaxBound = myToDate;
-      }
-    } else if (myInputEl.id === 'myInputTimeTo') {
-      if (myFromEl && myFromEl.value) {
-        const myFromDate = new Date(myFromEl.value);
-        if (!isNaN(myFromDate.getTime())) myMinBound = myFromDate;
-      }
-    }
+    const myFromDate = (myFromEl && myFromEl.value) ? new Date(myFromEl.value) : null;
+    const myToDate = (myToEl && myToEl.value) ? new Date(myToEl.value) : null;
+    const myHasValidRange = Boolean(myFromDate && myToDate && !isNaN(myFromDate.getTime()) && !isNaN(myToDate.getTime()));
+    const mySpanMs = myHasValidRange ? (myToDate.getTime() - myFromDate.getTime()) : 0;
 
-    const myNextDate = myClampDate_(myUnclampedDate, myMinBound, myMaxBound);
-    myInputEl.value = myToDatetimeInputValue(myNextDate);
+    if (myIsTimeWindowLinked_ && myHasValidRange && mySpanMs > 0) {
+      let myNextFromMs;
+      let myNextToMs;
+
+      if (myInputEl.id === 'myInputTimeFrom') {
+        myNextFromMs = myUnclampedDate.getTime();
+        myNextToMs = myNextFromMs + mySpanMs;
+      } else {
+        myNextToMs = myUnclampedDate.getTime();
+        myNextFromMs = myNextToMs - mySpanMs;
+      }
+
+      if (myNextToMs > myNow.getTime()) {
+        myNextToMs = myNow.getTime();
+        myNextFromMs = myNextToMs - mySpanMs;
+      }
+      if (myNextFromMs < myMinRetentionDate.getTime()) {
+        myNextFromMs = myMinRetentionDate.getTime();
+        myNextToMs = myNextFromMs + mySpanMs;
+      }
+
+      if (myFromEl) myFromEl.value = myToDatetimeInputValue(new Date(myNextFromMs));
+      if (myToEl) myToEl.value = myToDatetimeInputValue(new Date(myNextToMs));
+    } else {
+      const myNextDate = myClampDate_(myUnclampedDate, myMinRetentionDate, myNow);
+      myInputEl.value = myToDatetimeInputValue(myNextDate);
+    }
 
     myInputEl.title = 'Kółko myszy: ' + mySegmentData.label;
 
@@ -1895,9 +2052,17 @@
    * Attach mouse position heuristic wheel listeners to datetime inputs.
    */
   function myInitDatetimeWheelScrubbing_() {
+    myRestoreTimeWindowLinkState_();
+
     ['myInputTimeFrom', 'myInputTimeTo'].forEach(function (myId) {
       const myEl = document.getElementById(myId);
       if (!myEl) return;
+
+      myEl.addEventListener('focus', function () {
+        const myMs = new Date(myEl.value).getTime();
+        if (!isNaN(myMs)) myEl._myLastValidDateMs = myMs;
+      });
+
       myEl.addEventListener('wheel', function (myEvt) {
         myHandleDatetimeWheel_(myEvt, myEl);
       }, { passive: false });
@@ -1906,13 +2071,23 @@
         myHandleDatetimeMouseMove_(myEvt, myEl);
       });
 
-      myEl.addEventListener('input', myCheckTimeWindowDirtyState_);
-      myEl.addEventListener('change', function () {
-        myValidateAndClampInputs_(myEl);
+      myEl.addEventListener('input', function () {
+        mySyncLinkedTimeWindowInput_(myEl);
         myCheckTimeWindowDirtyState_();
       });
+
+      myEl.addEventListener('change', function () {
+        mySyncLinkedTimeWindowInput_(myEl);
+        if (!myIsTimeWindowLinked_) {
+          myValidateAndClampInputs_(myEl);
+        }
+        myCheckTimeWindowDirtyState_();
+      });
+
       myEl.addEventListener('blur', function () {
-        myValidateAndClampInputs_(myEl);
+        if (!myIsTimeWindowLinked_) {
+          myValidateAndClampInputs_(myEl);
+        }
         myCheckTimeWindowDirtyState_();
       });
     });
