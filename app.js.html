@@ -1451,24 +1451,108 @@
     myRenderFromLocalCache_(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
   }
 
+  const MY_MS_PER_DAY = 86400000;
+  const MY_DEFAULT_RETENTION_DAYS = 30;
+  const MY_DATETIME_MASK_LENGTH = 16;
+  const MY_MIN_YEAR = 1970;
+  const MY_MAX_YEAR = 9999;
+
   /**
-   * Convert Date object to datetime-local input string YYYY-MM-DDTHH:mm.
+   * Pad number to 2 digits with leading zero.
+   * @param {number} myVal - Number to pad.
+   * @return {string} Padded 2-char string.
+   */
+  function myPadZero2_(myVal) {
+    return String(myVal).padStart(2, '0');
+  }
+
+  /**
+   * Pad number to 4 digits with leading zeros.
+   * @param {number} myVal - Number to pad.
+   * @return {string} Padded 4-char string.
+   */
+  function myPadZero4_(myVal) {
+    return String(myVal).padStart(4, '0');
+  }
+
+  /**
+   * Convert Date object to ISO local string YYYY-MM-DDTHH:mm for native picker anchors.
    * @param {Date} myDate - Date instance.
-   * @return {string} Datetime string.
+   * @return {string} ISO local datetime string.
+   */
+  function myToIsoDatetimeLocal_(myDate) {
+    return new Date(myDate.getTime() - (myDate.getTimezoneOffset() * 60000)).toISOString().slice(0, MY_DATETIME_MASK_LENGTH);
+  }
+
+  /**
+   * Convert Date object to masked input string dd.MM.yyyy HH:mm.
+   * @param {Date} myDate - Date instance.
+   * @return {string} Masked datetime string.
    */
   function myToDatetimeInputValue(myDate) {
-    const myOffsetMs = myDate.getTimezoneOffset() * 60000;
-    return new Date(myDate.getTime() - myOffsetMs).toISOString().slice(0, 16);
+    if (!myDate || isNaN(myDate.getTime())) return '';
+    return myPadZero2_(myDate.getDate()) + '.' +
+      myPadZero2_(myDate.getMonth() + 1) + '.' +
+      myPadZero4_(myDate.getFullYear()) + ' ' +
+      myPadZero2_(myDate.getHours()) + ':' +
+      myPadZero2_(myDate.getMinutes());
+  }
+
+  /**
+   * Parse masked string dd.MM.yyyy HH:mm or ISO string into a normalized Date object.
+   * @param {string} myValStr - Input text value.
+   * @return {Date|null} Parsed Date instance or null.
+   */
+  function myParseDatetimeInputValue_(myValStr) {
+    if (!myValStr || typeof myValStr !== 'string') return null;
+    const myTrimmed = myValStr.trim();
+    const myMatch = /^(\d{1,2})\.(\d{1,2})\.(\d{1,4})\s+(\d{1,2}):(\d{1,2})$/.exec(myTrimmed);
+    if (!myMatch) {
+      const myFallback = new Date(myTrimmed);
+      return isNaN(myFallback.getTime()) ? null : myFallback;
+    }
+
+    const myYear = Math.max(MY_MIN_YEAR, Math.min(MY_MAX_YEAR, Number(myMatch[3])));
+    const myMonth = Math.max(1, Math.min(12, Number(myMatch[2])));
+    const myMaxDay = new Date(myYear, myMonth, 0).getDate();
+    const myDay = Math.max(1, Math.min(myMaxDay, Number(myMatch[1])));
+    const myHour = Math.max(0, Math.min(23, Number(myMatch[4])));
+    const myMin = Math.max(0, Math.min(59, Number(myMatch[5])));
+    return new Date(myYear, myMonth - 1, myDay, myHour, myMin, 0, 0);
+  }
+
+  /**
+   * Assign input value only when different from current DOM value.
+   * @param {HTMLInputElement} myInputEl - Target input element.
+   * @param {string} myNextVal - New formatted string value.
+   */
+  function mySetInputValueIfChanged_(myInputEl, myNextVal) {
+    if (myInputEl && myInputEl.value !== myNextVal) {
+      myInputEl.value = myNextVal;
+    }
+  }
+
+  /**
+   * Compute allowable retention window bounds in milliseconds.
+   * @return {{ minMs: number, maxMs: number }} Lower and upper timestamp bounds.
+   */
+  function myGetRetentionWindowBoundsMs_() {
+    const myMaxMs = Date.now();
+    const myRetention = (mySettings_ && mySettings_.retentionDays) ? Number(mySettings_.retentionDays) : MY_DEFAULT_RETENTION_DAYS;
+    return {
+      minMs: myMaxMs - (myRetention * MY_MS_PER_DAY),
+      maxMs: myMaxMs
+    };
   }
 
   /**
    * Set time window inputs and refresh dashboard based on day preset.
-   * @param {number} myDaysCount - Lookback days count.
+   * @param {number|string} myDaysCount - Lookback days count or 'all'.
    */
   function mySetTimeWindowPreset(myDaysCount) {
     let myDays = myDaysCount;
     if (myDaysCount === 'all') {
-      myDays = (mySettings_ && mySettings_.retentionDays) ? mySettings_.retentionDays : 30;
+      myDays = (mySettings_ && mySettings_.retentionDays) ? mySettings_.retentionDays : MY_DEFAULT_RETENTION_DAYS;
     }
     myGlobalPresetDays = myDaysCount;
     const myNow = new Date();
@@ -1511,23 +1595,40 @@
   }
 
   /**
-   * Update min and max boundary constraints for datetime inputs based on retention and current time.
+   * Synchronize hidden native picker input value with its paired masked text input.
+   * @param {HTMLInputElement} myInputEl - Masked text input element.
+   * @param {HTMLInputElement} myPickerEl - Native datetime-local picker element.
+   */
+  function mySyncPickerAnchorValue_(myInputEl, myPickerEl) {
+    if (!myInputEl || !myPickerEl) return;
+    const myDate = myParseDatetimeInputValue_(myInputEl.value);
+    if (!myDate) return;
+    mySetInputValueIfChanged_(myPickerEl, myToIsoDatetimeLocal_(myDate));
+  }
+
+  /**
+   * Update min, max, and current value on native picker inputs based on retention and current time.
    */
   function myUpdateTimeWindowInputBounds_() {
-    const myFromEl = document.getElementById('myInputTimeFrom');
-    const myToEl = document.getElementById('myInputTimeTo');
-    if (!myFromEl || !myToEl) return;
+    const myBounds = myGetRetentionWindowBoundsMs_();
+    const myMinIso = myToIsoDatetimeLocal_(new Date(myBounds.minMs));
+    const myMaxIso = myToIsoDatetimeLocal_(new Date(myBounds.maxMs));
 
-    const myRetention = (mySettings_ && mySettings_.retentionDays) ? Number(mySettings_.retentionDays) : 30;
-    const myNow = new Date();
-    const myMinDate = new Date(myNow.getTime() - (myRetention * 86400000));
-    const myMinStr = myToDatetimeInputValue(myMinDate);
-    const myMaxStr = myToDatetimeInputValue(myNow);
+    const myPairs = [
+      { inputId: 'myInputTimeFrom', pickerId: 'myPickerTimeFrom' },
+      { inputId: 'myInputTimeTo', pickerId: 'myPickerTimeTo' }
+    ];
 
-    myFromEl.min = myMinStr;
-    myFromEl.max = myMaxStr;
-    myToEl.min = myMinStr;
-    myToEl.max = myMaxStr;
+    myPairs.forEach(function (myPair) {
+      const myInputEl = document.getElementById(myPair.inputId);
+      const myPickerEl = document.getElementById(myPair.pickerId);
+      if (!myPickerEl) return;
+      if (document.activeElement !== myPickerEl) {
+        myPickerEl.min = myMinIso;
+        myPickerEl.max = myMaxIso;
+        mySyncPickerAnchorValue_(myInputEl, myPickerEl);
+      }
+    });
   }
 
   /**
@@ -1539,38 +1640,33 @@
     const myToEl = document.getElementById('myInputTimeTo');
     if (!myFromEl || !myToEl) return;
 
-    const myNow = new Date();
-    const myRetention = (mySettings_ && mySettings_.retentionDays) ? Number(mySettings_.retentionDays) : 30;
-    const myMinRetentionDate = new Date(myNow.getTime() - (myRetention * 86400000));
+    const myBounds = myGetRetentionWindowBoundsMs_();
+    const myMinDate = new Date(myBounds.minMs);
+    const myNowDate = new Date(myBounds.maxMs);
 
-    let myFromDate = myFromEl.value ? new Date(myFromEl.value) : null;
-    let myToDate = myToEl.value ? new Date(myToEl.value) : null;
+    let myFromDate = myParseDatetimeInputValue_(myFromEl.value);
+    let myToDate = myParseDatetimeInputValue_(myToEl.value);
 
     if (myToDate) {
-      if (isNaN(myToDate.getTime()) || myToDate.getTime() > myNow.getTime()) {
-        myToDate = new Date(myNow);
-      } else if (myToDate.getTime() < myMinRetentionDate.getTime()) {
-        myToDate = new Date(myMinRetentionDate);
-      }
-      myToEl.value = myToDatetimeInputValue(myToDate);
+      myToDate = myClampDate_(myToDate, myMinDate, myNowDate);
+      mySetInputValueIfChanged_(myToEl, myToDatetimeInputValue(myToDate));
     }
 
     if (myFromDate) {
-      if (isNaN(myFromDate.getTime()) || myFromDate.getTime() < myMinRetentionDate.getTime()) {
-        myFromDate = new Date(myMinRetentionDate);
-      } else if (myFromDate.getTime() > myNow.getTime()) {
-        myFromDate = new Date(myNow);
-      }
-      myFromEl.value = myToDatetimeInputValue(myFromDate);
+      myFromDate = myClampDate_(myFromDate, myMinDate, myNowDate);
+      mySetInputValueIfChanged_(myFromEl, myToDatetimeInputValue(myFromDate));
     }
 
     if (myFromDate && myToDate && myFromDate.getTime() > myToDate.getTime()) {
-      if (myActiveInputEl && myActiveInputEl.id === 'myInputTimeFrom') {
-        myToEl.value = myFromEl.value;
-      } else {
-        myFromEl.value = myToEl.value;
-      }
+      const mySyncSourceVal = (myActiveInputEl && myActiveInputEl.id === 'myInputTimeFrom') ? myFromEl.value : myToEl.value;
+      mySetInputValueIfChanged_(myFromEl, mySyncSourceVal);
+      mySetInputValueIfChanged_(myToEl, mySyncSourceVal);
     }
+
+    const myFinalFrom = myParseDatetimeInputValue_(myFromEl.value);
+    const myFinalTo = myParseDatetimeInputValue_(myToEl.value);
+    if (myFinalFrom) myFromEl._myLastValidDateMs = myFinalFrom.getTime();
+    if (myFinalTo) myToEl._myLastValidDateMs = myFinalTo.getTime();
 
     myUpdateTimeWindowInputBounds_();
   }
@@ -1614,12 +1710,14 @@
 
     const myFromVal = document.getElementById('myInputTimeFrom').value;
     const myToVal = document.getElementById('myInputTimeTo').value;
+    const myFromDate = myParseDatetimeInputValue_(myFromVal);
+    const myToDate = myParseDatetimeInputValue_(myToVal);
 
     myGlobalPresetDays = null;
     myHighlightPresetBtn_(null);
 
-    myGlobalFromIso = myFromVal ? new Date(myFromVal).toISOString() : '';
-    myGlobalToIso = myToVal ? new Date(myToVal).toISOString() : '';
+    myGlobalFromIso = myFromDate ? myFromDate.toISOString() : '';
+    myGlobalToIso = myToDate ? myToDate.toISOString() : '';
 
     myAppliedFromInputValue_ = myFromVal;
     myAppliedToInputValue_ = myToVal;
@@ -1715,11 +1813,13 @@
 
       const myFromEl = document.getElementById('myInputTimeFrom');
       const myToEl = document.getElementById('myInputTimeTo');
-      if (myFromEl) myFromEl.value = myState.fromVal;
-      if (myToEl) myToEl.value = myState.toVal;
+      const myFromVal = myState.fromIso ? myToDatetimeInputValue(new Date(myState.fromIso)) : myState.fromVal;
+      const myToVal = myState.toIso ? myToDatetimeInputValue(new Date(myState.toIso)) : myState.toVal;
+      if (myFromEl) myFromEl.value = myFromVal;
+      if (myToEl) myToEl.value = myToVal;
 
-      myAppliedFromInputValue_ = myState.fromVal;
-      myAppliedToInputValue_ = myState.toVal;
+      myAppliedFromInputValue_ = myFromVal;
+      myAppliedToInputValue_ = myToVal;
 
       myHighlightPresetBtn_(myState.presetDays);
       myUpdateTimeWindowInputBounds_();
@@ -1731,6 +1831,14 @@
       myIsNavigatingHistory_ = false;
     }
   }
+
+  const MY_DATETIME_SEGMENTS = [
+    { index: 0, segment: 'day', start: 0, end: 2, maxLen: 2, defaultStr: '01', label: 'Dzień (±1)' },
+    { index: 1, segment: 'month', start: 3, end: 5, maxLen: 2, defaultStr: '01', label: 'Miesiąc (±1)' },
+    { index: 2, segment: 'year', start: 6, end: 10, maxLen: 4, defaultStr: '2026', label: 'Rok (±1)' },
+    { index: 3, segment: 'hour', start: 11, end: 13, maxLen: 2, defaultStr: '00', label: 'Godzina (±1)' },
+    { index: 4, segment: 'minute', start: 14, end: 16, maxLen: 2, defaultStr: '00', label: 'Minuta (±1)' }
+  ];
 
   let myCachedMetricsBounds_ = null;
 
@@ -1778,28 +1886,33 @@
    * Determine targeted date segment based on mouse offsetX and text metrics.
    * @param {number} myOffsetX - Mouse X offset.
    * @param {HTMLInputElement} myInputEl - Target input element.
-   * @return {{ segment: string, label: string }|null} Segment info or null.
+   * @return {Object|null} Segment definition or null.
    */
   function myGetSegmentFromOffsetX_(myOffsetX, myInputEl) {
     const myBounds = myGetMetricsBounds_(myInputEl);
     const myTextX = myOffsetX - myBounds.paddingLeft;
 
-    if (myTextX < 0) return null;
-    if (myTextX > myBounds.minute + 10) return null;
+    if (myTextX < 0 || myTextX > myBounds.minute + 10) return null;
+    if (myTextX <= myBounds.day) return MY_DATETIME_SEGMENTS[0];
+    if (myTextX <= myBounds.month) return MY_DATETIME_SEGMENTS[1];
+    if (myTextX <= myBounds.year) return MY_DATETIME_SEGMENTS[2];
+    if (myTextX <= myBounds.hour) return MY_DATETIME_SEGMENTS[3];
+    return MY_DATETIME_SEGMENTS[4];
+  }
 
-    if (myTextX <= myBounds.day) {
-      return { segment: 'day', label: 'Dzień (±1)' };
+  /**
+   * Resolve segment definition from text caret index (0..16).
+   * @param {number} myCaretPos - Caret selectionStart index.
+   * @return {Object} Segment definition object.
+   */
+  function myGetSegmentFromCaret_(myCaretPos) {
+    const myPos = (typeof myCaretPos === 'number' && !isNaN(myCaretPos)) ? myCaretPos : 0;
+    for (let myI = 0; myI < MY_DATETIME_SEGMENTS.length; myI++) {
+      if (myPos <= MY_DATETIME_SEGMENTS[myI].end) {
+        return MY_DATETIME_SEGMENTS[myI];
+      }
     }
-    if (myTextX <= myBounds.month) {
-      return { segment: 'month', label: 'Miesiąc (±1)' };
-    }
-    if (myTextX <= myBounds.year) {
-      return { segment: 'year', label: 'Rok (±1)' };
-    }
-    if (myTextX <= myBounds.hour) {
-      return { segment: 'hour', label: 'Godzina (±1)' };
-    }
-    return { segment: 'minute', label: 'Minuta (±1)' };
+    return MY_DATETIME_SEGMENTS[MY_DATETIME_SEGMENTS.length - 1];
   }
 
   /**
@@ -1841,7 +1954,7 @@
     }
 
     if (mySegment === 'year') {
-      const myNextYear = myDate.getFullYear() + myDelta;
+      const myNextYear = Math.max(MY_MIN_YEAR, Math.min(MY_MAX_YEAR, myDate.getFullYear() + myDelta));
       const myMaxDays = new Date(myNextYear, myDate.getMonth() + 1, 0).getDate();
       myNewDate.setDate(1);
       myNewDate.setFullYear(myNextYear);
@@ -1915,6 +2028,29 @@
   }
 
   /**
+   * Clamp linked [fromMs, toMs] interval while preserving constant window span.
+   * @param {number} myFromMs - Candidate start timestamp.
+   * @param {number} myToMs - Candidate end timestamp.
+   * @param {number} mySpanMs - Fixed span in milliseconds.
+   * @return {{ fromMs: number, toMs: number }} Clamped interval.
+   */
+  function myClampLinkedRangeMs_(myFromMs, myToMs, mySpanMs) {
+    const myBounds = myGetRetentionWindowBoundsMs_();
+    let myNextFromMs = myFromMs;
+    let myNextToMs = myToMs;
+
+    if (myNextToMs > myBounds.maxMs) {
+      myNextToMs = myBounds.maxMs;
+      myNextFromMs = myNextToMs - mySpanMs;
+    }
+    if (myNextFromMs < myBounds.minMs) {
+      myNextFromMs = myBounds.minMs;
+      myNextToMs = myNextFromMs + mySpanMs;
+    }
+    return { fromMs: myNextFromMs, toMs: myNextToMs };
+  }
+
+  /**
    * Sync counterpart datetime input when linked mode is active.
    * @param {HTMLInputElement} mySourceEl - Changed input element.
    */
@@ -1926,10 +2062,12 @@
     if (!myFromEl || !myToEl) return;
 
     const myOtherEl = (mySourceEl.id === 'myInputTimeFrom') ? myToEl : myFromEl;
-    const myCurrMs = new Date(mySourceEl.value).getTime();
-    const myOtherMs = new Date(myOtherEl.value).getTime();
-    if (isNaN(myCurrMs) || isNaN(myOtherMs)) return;
+    const myCurrDate = myParseDatetimeInputValue_(mySourceEl.value);
+    const myOtherDate = myParseDatetimeInputValue_(myOtherEl.value);
+    if (!myCurrDate || !myOtherDate) return;
 
+    const myCurrMs = myCurrDate.getTime();
+    const myOtherMs = myOtherDate.getTime();
     const myPrevMs = mySourceEl._myLastValidDateMs || myCurrMs;
     const myDeltaMs = myCurrMs - myPrevMs;
     mySourceEl._myLastValidDateMs = myCurrMs;
@@ -1937,34 +2075,238 @@
     if (myDeltaMs === 0) return;
 
     const mySpanMs = Math.abs(myOtherMs - myPrevMs);
-    const myNowMs = Date.now();
-    const myRetention = (mySettings_ && mySettings_.retentionDays) ? Number(mySettings_.retentionDays) : 30;
-    const myMinRetentionMs = myNowMs - (myRetention * 86400000);
+    const myRawFromMs = (mySourceEl.id === 'myInputTimeFrom') ? myCurrMs : (myCurrMs - mySpanMs);
+    const myRawToMs = (mySourceEl.id === 'myInputTimeFrom') ? (myCurrMs + mySpanMs) : myCurrMs;
+    const myClamped = myClampLinkedRangeMs_(myRawFromMs, myRawToMs, mySpanMs);
 
-    let myNextFromMs;
-    let myNextToMs;
+    mySetInputValueIfChanged_(myFromEl, myToDatetimeInputValue(new Date(myClamped.fromMs)));
+    mySetInputValueIfChanged_(myToEl, myToDatetimeInputValue(new Date(myClamped.toMs)));
+    myFromEl._myLastValidDateMs = myClamped.fromMs;
+    myToEl._myLastValidDateMs = myClamped.toMs;
+  }
 
-    if (mySourceEl.id === 'myInputTimeFrom') {
-      myNextFromMs = myCurrMs;
-      myNextToMs = myNextFromMs + mySpanMs;
-    } else {
-      myNextToMs = myCurrMs;
-      myNextFromMs = myNextToMs - mySpanMs;
+  /**
+   * Select character range of a datetime segment and reset its typing buffer.
+   * @param {HTMLInputElement} myInputEl - Target input element.
+   * @param {Object} mySeg - Segment descriptor from MY_DATETIME_SEGMENTS.
+   */
+  function mySelectDatetimeSegment_(myInputEl, mySeg) {
+    if (!myInputEl || !mySeg) return;
+    myInputEl._myActiveSegmentKey = mySeg.segment;
+    myInputEl._myTypedDigitsCount = 0;
+    myInputEl._myDigitBuffer = '';
+    myInputEl._myIsUpdatingSelection = true;
+    try {
+      myInputEl.setSelectionRange(mySeg.start, mySeg.end);
+    } finally {
+      myInputEl._myIsUpdatingSelection = false;
+    }
+  }
+
+  /**
+   * Replace substring inside masked input for a specific segment and keep it highlighted.
+   * @param {HTMLInputElement} myInputEl - Target input element.
+   * @param {Object} mySeg - Target segment descriptor.
+   * @param {string} mySegStr - Replacement segment text.
+   */
+  function myReplaceSegmentText_(myInputEl, mySeg, mySegStr) {
+    const myBase = (myInputEl.value && myInputEl.value.length === MY_DATETIME_MASK_LENGTH) ?
+      myInputEl.value :
+      myToDatetimeInputValue(new Date());
+    myInputEl.value = myBase.slice(0, mySeg.start) + mySegStr + myBase.slice(mySeg.end);
+    myInputEl._myIsUpdatingSelection = true;
+    try {
+      myInputEl.setSelectionRange(mySeg.start, mySeg.end);
+    } finally {
+      myInputEl._myIsUpdatingSelection = false;
+    }
+  }
+
+  /**
+   * Commit active segment, normalize calendar bounds, sync linked window, and update dirty state.
+   * @param {HTMLInputElement} myInputEl - Target input element.
+   */
+  function myCommitDatetimeSegment_(myInputEl) {
+    if (!myInputEl) return;
+    myInputEl._myIsSegmentDirty = false;
+    myInputEl._myTypedDigitsCount = 0;
+    myInputEl._myDigitBuffer = '';
+
+    const myParsed = myParseDatetimeInputValue_(myInputEl.value);
+    if (myParsed) {
+      mySetInputValueIfChanged_(myInputEl, myToDatetimeInputValue(myParsed));
     }
 
-    if (myNextToMs > myNowMs) {
-      myNextToMs = myNowMs;
-      myNextFromMs = myNextToMs - mySpanMs;
-    }
-    if (myNextFromMs < myMinRetentionMs) {
-      myNextFromMs = myMinRetentionMs;
-      myNextToMs = myNextFromMs + mySpanMs;
+    mySyncLinkedTimeWindowInput_(myInputEl);
+    if (!myIsTimeWindowLinked_) {
+      myValidateAndClampInputs_(myInputEl);
     }
 
-    myFromEl.value = myToDatetimeInputValue(new Date(myNextFromMs));
-    myToEl.value = myToDatetimeInputValue(new Date(myNextToMs));
-    myFromEl._myLastValidDateMs = myNextFromMs;
-    myToEl._myLastValidDateMs = myNextToMs;
+    myGlobalPresetDays = null;
+    myHighlightPresetBtn_(null);
+    myCheckTimeWindowDirtyState_();
+  }
+
+  /**
+   * Handle digit keystroke (0-9) inside an active datetime segment.
+   * @param {HTMLInputElement} myInputEl - Target input element.
+   * @param {Object} mySeg - Active segment descriptor.
+   * @param {string} myDigit - Typed digit character ('0'-'9').
+   */
+  function myHandleDatetimeDigitKey_(myInputEl, mySeg, myDigit) {
+    const myNextBuffer = ((myInputEl._myDigitBuffer || '') + myDigit).slice(-mySeg.maxLen);
+    const myNextCount = (myInputEl._myTypedDigitsCount || 0) + 1;
+    const myPadded = myNextBuffer.padStart(mySeg.maxLen, '0');
+
+    myInputEl._myDigitBuffer = myNextBuffer;
+    myInputEl._myTypedDigitsCount = myNextCount;
+    myInputEl._myIsSegmentDirty = true;
+    myReplaceSegmentText_(myInputEl, mySeg, myPadded);
+
+    if (myNextCount >= mySeg.maxLen) {
+      myCommitDatetimeSegment_(myInputEl);
+      const myNextIdx = Math.min(MY_DATETIME_SEGMENTS.length - 1, mySeg.index + 1);
+      mySelectDatetimeSegment_(myInputEl, MY_DATETIME_SEGMENTS[myNextIdx]);
+    }
+  }
+
+  /**
+   * Step active segment value up or down via ArrowUp / ArrowDown keys.
+   * @param {HTMLInputElement} myInputEl - Target input element.
+   * @param {Object} mySeg - Active segment descriptor.
+   * @param {number} myDelta - Step direction (+1 or -1).
+   */
+  function myHandleDatetimeStepKey_(myInputEl, mySeg, myDelta) {
+    if (myInputEl._myIsSegmentDirty) {
+      myCommitDatetimeSegment_(myInputEl);
+    }
+    const myCurrDate = myParseDatetimeInputValue_(myInputEl.value) || new Date();
+    const mySteppedDate = myAdjustDateBySegment_(myCurrDate, mySeg.segment, myDelta);
+    myInputEl.value = myToDatetimeInputValue(mySteppedDate);
+    myCommitDatetimeSegment_(myInputEl);
+    mySelectDatetimeSegment_(myInputEl, mySeg);
+  }
+
+  /**
+   * Reset active segment to its default minimum value on Backspace or Delete.
+   * @param {HTMLInputElement} myInputEl - Target input element.
+   * @param {Object} mySeg - Active segment descriptor.
+   */
+  function myHandleDatetimeClearKey_(myInputEl, mySeg) {
+    myInputEl._myDigitBuffer = '';
+    myInputEl._myTypedDigitsCount = 0;
+    myInputEl._myIsSegmentDirty = true;
+    myReplaceSegmentText_(myInputEl, mySeg, mySeg.defaultStr);
+  }
+
+  /**
+   * Commit segment edits and move selection highlight to an adjacent segment.
+   * @param {HTMLInputElement} myInputEl - Target input element.
+   * @param {Object} mySeg - Current segment descriptor.
+   * @param {number} myDir - Step direction (+1 or -1).
+   * @param {boolean} myForceCommit - Force commit even when segment is clean.
+   */
+  function myMoveSegmentSelection_(myInputEl, mySeg, myDir, myForceCommit) {
+    if (myForceCommit || myInputEl._myIsSegmentDirty) {
+      myCommitDatetimeSegment_(myInputEl);
+    }
+    mySelectDatetimeSegment_(
+      myInputEl,
+      MY_DATETIME_SEGMENTS[Math.max(0, Math.min(MY_DATETIME_SEGMENTS.length - 1, mySeg.index + myDir))]
+    );
+  }
+
+  /**
+   * Handle keyboard navigation and masked editing on datetime text input.
+   * @param {KeyboardEvent} myEvt - Keyboard event.
+   * @param {HTMLInputElement} myInputEl - Target input element.
+   */
+  function myHandleDatetimeKeydown_(myEvt, myInputEl) {
+    if (myEvt.ctrlKey || myEvt.metaKey || myEvt.altKey) return;
+
+    const mySeg = myGetSegmentFromCaret_(myInputEl.selectionStart);
+
+    if (/^[0-9]$/.test(myEvt.key)) {
+      myEvt.preventDefault();
+      myHandleDatetimeDigitKey_(myInputEl, mySeg, myEvt.key);
+      return;
+    }
+
+    if (myEvt.key === 'ArrowLeft' || myEvt.key === 'ArrowRight' || myEvt.key === 'Enter') {
+      myEvt.preventDefault();
+      myMoveSegmentSelection_(
+        myInputEl,
+        mySeg,
+        (myEvt.key === 'ArrowLeft' || (myEvt.key === 'Enter' && myEvt.shiftKey)) ? -1 : 1,
+        myEvt.key === 'Enter'
+      );
+      return;
+    }
+
+    if (myEvt.key === 'ArrowUp' || myEvt.key === 'ArrowDown') {
+      myEvt.preventDefault();
+      myHandleDatetimeStepKey_(myInputEl, mySeg, (myEvt.key === 'ArrowUp') ? 1 : -1);
+      return;
+    }
+
+    if (myEvt.key === 'Tab') {
+      const myNextIdx = mySeg.index + (myEvt.shiftKey ? -1 : 1);
+      if (myNextIdx >= 0 && myNextIdx < MY_DATETIME_SEGMENTS.length) {
+        myEvt.preventDefault();
+        myMoveSegmentSelection_(myInputEl, mySeg, myEvt.shiftKey ? -1 : 1, false);
+      }
+      return;
+    }
+
+    if (myEvt.key === 'Backspace' || myEvt.key === 'Delete') {
+      myEvt.preventDefault();
+      myHandleDatetimeClearKey_(myInputEl, mySeg);
+      return;
+    }
+
+    if (myEvt.key.length === 1) {
+      myEvt.preventDefault();
+    }
+  }
+
+  /**
+   * Detect segment focus change via caret selection and trigger validation on the previous segment.
+   * @param {HTMLInputElement} myInputEl - Target input element.
+   * @param {boolean} [myForceHighlight] - Whether to force segment range highlight.
+   */
+  function myHandleDatetimeSelectionChange_(myInputEl, myForceHighlight) {
+    if (!myInputEl || myInputEl._myIsUpdatingSelection || document.activeElement !== myInputEl) return;
+
+    const myNewSeg = myGetSegmentFromCaret_(myInputEl.selectionStart);
+    const myPrevKey = myInputEl._myActiveSegmentKey;
+
+    if (myPrevKey && myPrevKey !== myNewSeg.segment) {
+      if (myInputEl._myIsSegmentDirty) {
+        myCommitDatetimeSegment_(myInputEl);
+      }
+      mySelectDatetimeSegment_(myInputEl, myNewSeg);
+      return;
+    }
+
+    if (!myPrevKey || myForceHighlight) {
+      mySelectDatetimeSegment_(myInputEl, myNewSeg);
+    }
+  }
+
+  /**
+   * Handle clipboard paste into masked datetime input.
+   * @param {ClipboardEvent} myEvt - Paste event.
+   * @param {HTMLInputElement} myInputEl - Target input element.
+   */
+  function myHandleDatetimePaste_(myEvt, myInputEl) {
+    myEvt.preventDefault();
+    const myRaw = (myEvt.clipboardData || window.clipboardData).getData('text');
+    const myParsed = myParseDatetimeInputValue_(myRaw);
+    if (!myParsed) return;
+
+    myInputEl.value = myToDatetimeInputValue(myParsed);
+    myCommitDatetimeSegment_(myInputEl);
+    mySelectDatetimeSegment_(myInputEl, myGetSegmentFromCaret_(myInputEl.selectionStart));
   }
 
   /**
@@ -1978,57 +2320,43 @@
     if (!mySegmentData) return;
 
     myEvt.preventDefault();
-
-    let myCurrDate = myInputEl.value ? new Date(myInputEl.value) : new Date();
-    if (isNaN(myCurrDate.getTime())) myCurrDate = new Date();
-
-    const myStep = (myEvt.shiftKey && mySegmentData.segment === 'minute') ? 5 : 1;
-    const myDelta = (myEvt.deltaY < 0 ? 1 : -1) * myStep;
-
-    const myUnclampedDate = myAdjustDateBySegment_(myCurrDate, mySegmentData.segment, myDelta);
-
-    const myNow = new Date();
-    const myRetention = (mySettings_ && mySettings_.retentionDays) ? Number(mySettings_.retentionDays) : 30;
-    const myMinRetentionDate = new Date(myNow.getTime() - (myRetention * 86400000));
-
-    const myFromEl = document.getElementById('myInputTimeFrom');
-    const myToEl = document.getElementById('myInputTimeTo');
-
-    const myFromDate = (myFromEl && myFromEl.value) ? new Date(myFromEl.value) : null;
-    const myToDate = (myToEl && myToEl.value) ? new Date(myToEl.value) : null;
-    const myHasValidRange = Boolean(myFromDate && myToDate && !isNaN(myFromDate.getTime()) && !isNaN(myToDate.getTime()));
-    const mySpanMs = myHasValidRange ? (myToDate.getTime() - myFromDate.getTime()) : 0;
-
-    if (myIsTimeWindowLinked_ && myHasValidRange && mySpanMs > 0) {
-      let myNextFromMs;
-      let myNextToMs;
-
-      if (myInputEl.id === 'myInputTimeFrom') {
-        myNextFromMs = myUnclampedDate.getTime();
-        myNextToMs = myNextFromMs + mySpanMs;
-      } else {
-        myNextToMs = myUnclampedDate.getTime();
-        myNextFromMs = myNextToMs - mySpanMs;
-      }
-
-      if (myNextToMs > myNow.getTime()) {
-        myNextToMs = myNow.getTime();
-        myNextFromMs = myNextToMs - mySpanMs;
-      }
-      if (myNextFromMs < myMinRetentionDate.getTime()) {
-        myNextFromMs = myMinRetentionDate.getTime();
-        myNextToMs = myNextFromMs + mySpanMs;
-      }
-
-      if (myFromEl) myFromEl.value = myToDatetimeInputValue(new Date(myNextFromMs));
-      if (myToEl) myToEl.value = myToDatetimeInputValue(new Date(myNextToMs));
-    } else {
-      const myNextDate = myClampDate_(myUnclampedDate, myMinRetentionDate, myNow);
-      myInputEl.value = myToDatetimeInputValue(myNextDate);
+    if (myInputEl._myIsSegmentDirty) {
+      myCommitDatetimeSegment_(myInputEl);
     }
 
-    myInputEl.title = 'Kółko myszy: ' + mySegmentData.label;
+    const myCurrDate = myParseDatetimeInputValue_(myInputEl.value) || new Date();
+    const myStep = (myEvt.shiftKey && mySegmentData.segment === 'minute') ? 5 : 1;
+    const myDelta = (myEvt.deltaY < 0 ? 1 : -1) * myStep;
+    const myUnclampedDate = myAdjustDateBySegment_(myCurrDate, mySegmentData.segment, myDelta);
 
+    const myBounds = myGetRetentionWindowBoundsMs_();
+    const myFromEl = document.getElementById('myInputTimeFrom');
+    const myToEl = document.getElementById('myInputTimeTo');
+    const myFromDate = myFromEl ? myParseDatetimeInputValue_(myFromEl.value) : null;
+    const myToDate = myToEl ? myParseDatetimeInputValue_(myToEl.value) : null;
+    const mySpanMs = (myFromDate && myToDate) ? (myToDate.getTime() - myFromDate.getTime()) : 0;
+
+    if (myIsTimeWindowLinked_ && mySpanMs > 0) {
+      const myRawFromMs = (myInputEl.id === 'myInputTimeFrom') ? myUnclampedDate.getTime() : (myUnclampedDate.getTime() - mySpanMs);
+      const myRawToMs = (myInputEl.id === 'myInputTimeFrom') ? (myUnclampedDate.getTime() + mySpanMs) : myUnclampedDate.getTime();
+      const myClamped = myClampLinkedRangeMs_(myRawFromMs, myRawToMs, mySpanMs);
+
+      mySetInputValueIfChanged_(myFromEl, myToDatetimeInputValue(new Date(myClamped.fromMs)));
+      mySetInputValueIfChanged_(myToEl, myToDatetimeInputValue(new Date(myClamped.toMs)));
+      if (myFromEl) myFromEl._myLastValidDateMs = myClamped.fromMs;
+      if (myToEl) myToEl._myLastValidDateMs = myClamped.toMs;
+    } else {
+      const myNextDate = myClampDate_(myUnclampedDate, new Date(myBounds.minMs), new Date(myBounds.maxMs));
+      mySetInputValueIfChanged_(myInputEl, myToDatetimeInputValue(myNextDate));
+      myInputEl._myLastValidDateMs = myNextDate.getTime();
+    }
+
+    if (document.activeElement === myInputEl) {
+      mySelectDatetimeSegment_(myInputEl, mySegmentData);
+    }
+
+    myUpdateTimeWindowInputBounds_();
+    myInputEl.title = 'Kółko myszy: ' + mySegmentData.label;
     myGlobalPresetDays = null;
     myHighlightPresetBtn_(null);
     myCheckTimeWindowDirtyState_();
@@ -2049,48 +2377,110 @@
   }
 
   /**
-   * Attach mouse position heuristic wheel listeners to datetime inputs.
+   * Propagate date chosen in native calendar picker into paired masked text input.
+   * @param {HTMLInputElement} myInputEl - Paired masked text input.
+   * @param {HTMLInputElement} myPickerEl - Native datetime-local picker element.
+   */
+  function myHandlePickerAnchorChange_(myInputEl, myPickerEl) {
+    if (!myInputEl || !myPickerEl || !myPickerEl.value) return;
+    const myPickedDate = new Date(myPickerEl.value);
+    if (isNaN(myPickedDate.getTime())) return;
+    mySetInputValueIfChanged_(myInputEl, myToDatetimeInputValue(myPickedDate));
+    myCommitDatetimeSegment_(myInputEl);
+  }
+
+  /**
+   * Bind masked editing, caret selection, wheel, and picker listeners to a datetime input pair.
+   * @param {string} myInputId - Masked text input ID.
+   * @param {string} myPickerId - Native datetime-local picker button ID.
+   */
+  function myBindDatetimeInputEvents_(myInputId, myPickerId) {
+    const myEl = document.getElementById(myInputId);
+    const myPickerEl = document.getElementById(myPickerId);
+    if (!myEl) return;
+
+    myEl.addEventListener('pointerdown', function () {
+      myEl._myIsPointerSelecting = true;
+    });
+
+    myEl.addEventListener('focus', function () {
+      const myParsed = myParseDatetimeInputValue_(myEl.value);
+      if (myParsed) myEl._myLastValidDateMs = myParsed.getTime();
+      if (!myEl._myIsPointerSelecting) {
+        const myInitIdx = myEl._myFocusLastSegmentOnce ? (MY_DATETIME_SEGMENTS.length - 1) : 0;
+        myEl._myFocusLastSegmentOnce = false;
+        mySelectDatetimeSegment_(myEl, MY_DATETIME_SEGMENTS[myInitIdx]);
+      }
+    });
+
+    myEl.addEventListener('pointerup', function () {
+      myEl._myIsPointerSelecting = false;
+      myHandleDatetimeSelectionChange_(myEl, true);
+    });
+
+    myEl.addEventListener('selectionchange', function () {
+      if (!myEl._myIsPointerSelecting) {
+        myHandleDatetimeSelectionChange_(myEl, false);
+      }
+    });
+
+    myEl.addEventListener('keydown', function (myEvt) {
+      myHandleDatetimeKeydown_(myEvt, myEl);
+    });
+
+    myEl.addEventListener('paste', function (myEvt) {
+      myHandleDatetimePaste_(myEvt, myEl);
+    });
+
+    myEl.addEventListener('wheel', function (myEvt) {
+      myHandleDatetimeWheel_(myEvt, myEl);
+    }, { passive: false });
+
+    myEl.addEventListener('mousemove', function (myEvt) {
+      myHandleDatetimeMouseMove_(myEvt, myEl);
+    });
+
+    myEl.addEventListener('blur', function () {
+      myEl._myIsPointerSelecting = false;
+      myCommitDatetimeSegment_(myEl);
+      myEl._myActiveSegmentKey = null;
+    });
+
+    if (!myPickerEl) return;
+
+    myPickerEl.addEventListener('pointerdown', function () {
+      if (myEl._myIsSegmentDirty) myCommitDatetimeSegment_(myEl);
+      myUpdateTimeWindowInputBounds_();
+    });
+
+    myPickerEl.addEventListener('focus', function () {
+      myUpdateTimeWindowInputBounds_();
+    });
+
+    myPickerEl.addEventListener('keydown', function (myEvt) {
+      if (myEvt.key === 'Tab' && myEvt.shiftKey) {
+        myEl._myFocusLastSegmentOnce = true;
+      }
+    });
+
+    myPickerEl.addEventListener('input', function () {
+      if (document.activeElement === myPickerEl) {
+        myHandlePickerAnchorChange_(myEl, myPickerEl);
+      }
+    });
+
+    myPickerEl.addEventListener('change', function () {
+      myHandlePickerAnchorChange_(myEl, myPickerEl);
+    });
+  }
+
+  /**
+   * Attach masked input, subelement focus validation, and wheel listeners to datetime inputs.
    */
   function myInitDatetimeWheelScrubbing_() {
     myRestoreTimeWindowLinkState_();
-
-    ['myInputTimeFrom', 'myInputTimeTo'].forEach(function (myId) {
-      const myEl = document.getElementById(myId);
-      if (!myEl) return;
-
-      myEl.addEventListener('focus', function () {
-        const myMs = new Date(myEl.value).getTime();
-        if (!isNaN(myMs)) myEl._myLastValidDateMs = myMs;
-      });
-
-      myEl.addEventListener('wheel', function (myEvt) {
-        myHandleDatetimeWheel_(myEvt, myEl);
-      }, { passive: false });
-
-      myEl.addEventListener('mousemove', function (myEvt) {
-        myHandleDatetimeMouseMove_(myEvt, myEl);
-      });
-
-      myEl.addEventListener('input', function () {
-        mySyncLinkedTimeWindowInput_(myEl);
-        myCheckTimeWindowDirtyState_();
-      });
-
-      myEl.addEventListener('change', function () {
-        mySyncLinkedTimeWindowInput_(myEl);
-        if (!myIsTimeWindowLinked_) {
-          myValidateAndClampInputs_(myEl);
-        }
-        myCheckTimeWindowDirtyState_();
-      });
-
-      myEl.addEventListener('blur', function () {
-        if (!myIsTimeWindowLinked_) {
-          myValidateAndClampInputs_(myEl);
-        }
-        myCheckTimeWindowDirtyState_();
-      });
-    });
+    myBindDatetimeInputEvents_('myInputTimeFrom', 'myPickerTimeFrom');
+    myBindDatetimeInputEvents_('myInputTimeTo', 'myPickerTimeTo');
   }
 
   /**

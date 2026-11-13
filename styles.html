@@ -623,6 +623,12 @@
     gap: 6px;
   }
 
+  .my-datetime-field-wrap {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+  }
+
   .my-datetime-input {
     background: var(--my-bg-surface);
     border: 1px solid var(--my-border);
@@ -630,7 +636,9 @@
     color: var(--my-text-primary);
     font-size: 13px;
     font-family: inherit;
-    padding: 7px 10px;
+    font-variant-numeric: tabular-nums;
+    width: 158px;
+    padding: 7px 28px 7px 10px;
     color-scheme: dark;
     transition: border-color 0.2s ease, box-shadow 0.2s ease;
   }
@@ -639,6 +647,62 @@
     outline: none;
     border-color: var(--my-border-focus);
     box-shadow: 0 0 0 2px var(--my-accent-glow);
+  }
+
+  .my-datetime-picker-btn {
+    position: absolute;
+    right: 5px;
+    width: 22px;
+    height: 22px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: var(--my-text-secondary);
+    color-scheme: dark;
+    cursor: pointer;
+    padding: 0;
+    margin: 0;
+    transition: background-color 0.15s ease, box-shadow 0.15s ease;
+  }
+
+  .my-datetime-picker-btn::-webkit-datetime-edit,
+  .my-datetime-picker-btn::-webkit-datetime-edit-fields-wrapper,
+  .my-datetime-picker-btn::-webkit-datetime-edit-text,
+  .my-datetime-picker-btn::-webkit-datetime-edit-day-field,
+  .my-datetime-picker-btn::-webkit-datetime-edit-month-field,
+  .my-datetime-picker-btn::-webkit-datetime-edit-year-field,
+  .my-datetime-picker-btn::-webkit-datetime-edit-hour-field,
+  .my-datetime-picker-btn::-webkit-datetime-edit-minute-field,
+  .my-datetime-picker-btn::-webkit-inner-spin-button,
+  .my-datetime-picker-btn::-webkit-clear-button {
+    display: none;
+  }
+
+  .my-datetime-picker-btn::-webkit-calendar-picker-indicator {
+    width: 15px;
+    height: 15px;
+    padding: 3px;
+    margin: 0;
+    cursor: pointer;
+    border-radius: 4px;
+    opacity: 0.75;
+    transition: opacity 0.15s ease, background-color 0.15s ease;
+  }
+
+  .my-datetime-picker-btn:hover::-webkit-calendar-picker-indicator,
+  .my-datetime-picker-btn:focus::-webkit-calendar-picker-indicator {
+    opacity: 1;
+    background-color: var(--my-bg-card-hover);
+  }
+
+  .my-datetime-picker-btn:focus,
+  .my-datetime-picker-btn:focus-visible {
+    outline: none;
+    background-color: var(--my-bg-card-hover);
+    box-shadow: 0 0 0 1.5px var(--my-border-focus);
   }
 
   .my-btn-link-window {

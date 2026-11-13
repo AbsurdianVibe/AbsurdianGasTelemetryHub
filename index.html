@@ -69,15 +69,24 @@
           </svg>
           Okno od:
         </span>
-        <input type="datetime-local" id="myInputTimeFrom" class="my-datetime-input"
-          aria-label="Początek okna czasowego">
+        <div class="my-datetime-field-wrap">
+          <input type="text" id="myInputTimeFrom" class="my-datetime-input" inputmode="numeric" autocomplete="off"
+            spellcheck="false" maxlength="16" placeholder="dd.mm.rrrr gg:mm" aria-label="Początek okna czasowego">
+          <input type="datetime-local" id="myPickerTimeFrom" class="my-datetime-picker-btn" title="Otwórz kalendarz"
+            aria-label="Otwórz kalendarz początku okna">
+        </div>
         <button type="button" id="myBtnLinkTimeWindow" class="my-btn my-btn-secondary my-btn-link-window"
           title="Okno czasowe rozłączone. Kliknij, aby połączyć (stała rozpiętość)"
           aria-label="Przełącz powiązanie okna czasowego" aria-pressed="false" onclick="myToggleTimeWindowLink()">
           <svg id="myIconLinkTimeWindow" width="27" height="14" viewBox="0 0 38 20" fill="currentColor" stroke="none" aria-hidden="true"></svg>
         </button>
         <span class="my-window-label">do:</span>
-        <input type="datetime-local" id="myInputTimeTo" class="my-datetime-input" aria-label="Koniec okna czasowego">
+        <div class="my-datetime-field-wrap">
+          <input type="text" id="myInputTimeTo" class="my-datetime-input" inputmode="numeric" autocomplete="off"
+            spellcheck="false" maxlength="16" placeholder="dd.mm.rrrr gg:mm" aria-label="Koniec okna czasowego">
+          <input type="datetime-local" id="myPickerTimeTo" class="my-datetime-picker-btn" title="Otwórz kalendarz"
+            aria-label="Otwórz kalendarz końca okna">
+        </div>
         <button id="myBtnApplyTimeWindow" class="my-btn" style="padding: 7px 14px; font-size: 13px;"
           onclick="myApplyTimeWindow()" disabled>
           Filtruj
