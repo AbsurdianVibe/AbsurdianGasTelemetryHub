@@ -107,16 +107,22 @@
       </div>
       <div class="my-time-resolutions" id="myTimeResolutionsBar" aria-label="Wybór rozdzielczości czasowej">
         <span class="my-kpi-sub" style="margin-right: 4px;">Rozdzielczość:</span>
-        <button type="button" class="my-pill-btn my-res-btn my-active-preset" id="myResBtnAuto"
+        <button type="button" class="my-pill-btn my-res-btn my-active-preset" id="myResBtnAuto" data-res="auto"
           onclick="mySetResolution('auto')">Auto</button>
-        <button type="button" class="my-pill-btn my-res-btn" id="myResBtn1d" onclick="mySetResolution('1d')">1d</button>
-        <button type="button" class="my-pill-btn my-res-btn" id="myResBtn1h" onclick="mySetResolution('1h')">1h</button>
-        <button type="button" class="my-pill-btn my-res-btn" id="myResBtn30m"
+        <button type="button" class="my-pill-btn my-res-btn" id="myResBtn1d" data-res="1d"
+          onclick="mySetResolution('1d')">1d</button>
+        <button type="button" class="my-pill-btn my-res-btn" id="myResBtn1h" data-res="1h"
+          onclick="mySetResolution('1h')">1h</button>
+        <button type="button" class="my-pill-btn my-res-btn" id="myResBtn30m" data-res="30m"
           onclick="mySetResolution('30m')">30m</button>
-        <button type="button" class="my-pill-btn my-res-btn" id="myResBtn15m"
+        <button type="button" class="my-pill-btn my-res-btn" id="myResBtn15m" data-res="15m"
           onclick="mySetResolution('15m')">15m</button>
-        <button type="button" class="my-pill-btn my-res-btn" id="myResBtn5m" onclick="mySetResolution('5m')">5m</button>
-        <button type="button" class="my-pill-btn my-res-btn" id="myResBtn1m" onclick="mySetResolution('1m')">1m</button>
+        <button type="button" class="my-pill-btn my-res-btn" id="myResBtn5m" data-res="5m"
+          onclick="mySetResolution('5m')">5m</button>
+        <button type="button" class="my-pill-btn my-res-btn" id="myResBtn1m" data-res="1m"
+          onclick="mySetResolution('1m')">1m</button>
+        <button type="button" class="my-pill-btn my-res-btn" id="myResBtnMax" data-res="max"
+          onclick="mySetResolution('max')">Max</button>
       </div>
     </aside>
 

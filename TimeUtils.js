@@ -68,32 +68,129 @@ function myResolveAutoResolution(myFromIso, myToIso) {
   return '1m';
 }
 
+const MY_MAX_CONTINUOUS_BUCKETS = 1000;
+
+/**
+ * Parse time range bounds into millisecond timestamps.
+ * @param {string} myFromIso - Start ISO timestamp.
+ * @param {string} myToIso - End ISO timestamp.
+ * @return {Object} Start and end millisecond bounds.
+ */
+function myParseTimeRangeMs_(myFromIso, myToIso) {
+  const myStartMs = myFromIso ? new Date(myFromIso).getTime() : 0;
+  const myEndMs = myToIso ? new Date(myToIso).getTime() : Date.now();
+  return {
+    startMs: isNaN(myStartMs) ? 0 : myStartMs,
+    endMs: isNaN(myEndMs) ? Date.now() : myEndMs
+  };
+}
+
 /**
  * Get bucket interval in milliseconds.
- * @param {string} myResolution - Resolution code.
+ * @param {string} myResolution - Resolution code or dynamic minute string.
  * @return {number} Milliseconds per bucket.
  */
 function myGetBucketStepMs(myResolution) {
   if (myResolution === '1d') return 86400000;
   if (myResolution === '1h') return 3600000;
-  if (myResolution === '30m') return 1800000;
-  if (myResolution === '15m') return 900000;
-  if (myResolution === '5m') return 300000;
+  if (myResolution && myResolution.endsWith('m')) {
+    const myMins = parseInt(myResolution, 10);
+    if (!isNaN(myMins) && myMins > 0) return myMins * 60000;
+  }
   return 60000;
 }
 
 /**
- * Format timestamp into bucket key using target resolution and timezone.
+ * Count bucket intervals between start and end timestamps.
+ * @param {string} myFromIso - Start ISO timestamp.
+ * @param {string} myToIso - End ISO timestamp.
+ * @param {string} myResolution - Target resolution code.
+ * @return {number} Estimated bucket interval count.
+ */
+function myEstimateBucketSteps(myFromIso, myToIso, myResolution) {
+  const myRange = myParseTimeRangeMs_(myFromIso, myToIso);
+  if (!myFromIso || myRange.endMs <= myRange.startMs) return 0;
+  return Math.floor((myRange.endMs - myRange.startMs) / myGetBucketStepMs(myResolution));
+}
+
+/**
+ * Resolve dynamic minute step that keeps bucket count within MY_MAX_CONTINUOUS_BUCKETS.
+ * @param {string} myFromIso - Start ISO timestamp.
+ * @param {string} myToIso - End ISO timestamp.
+ * @return {number} Whole-minute bucket step (at least 1).
+ */
+function myResolveMaxStepMinutes(myFromIso, myToIso) {
+  const myRange = myParseTimeRangeMs_(myFromIso, myToIso);
+  if (!myFromIso || myRange.endMs <= myRange.startMs) return 1;
+  return Math.max(1, Math.ceil(((myRange.endMs - myRange.startMs) / 60000) / MY_MAX_CONTINUOUS_BUCKETS));
+}
+
+/**
+ * Resolve effective aggregation parameters for auto, max, or fixed resolution.
+ * @param {string} myFromIso - Start ISO timestamp.
+ * @param {string} myToIso - End ISO timestamp.
+ * @param {string} [myRequestedResolution] - Requested resolution code.
+ * @return {Object} Effective resolution descriptor.
+ */
+function myResolveEffectiveAggregationSpec(myFromIso, myToIso, myRequestedResolution) {
+  const myRange = myParseTimeRangeMs_(myFromIso, myToIso);
+  const myRes = myRequestedResolution || 'auto';
+
+  if (myRes === 'auto') {
+    const myAutoRes = myResolveAutoResolution(myFromIso, myToIso);
+    return {
+      resolution: myAutoRes,
+      label: myAutoRes,
+      stepMs: myGetBucketStepMs(myAutoRes),
+      originMs: myRange.startMs,
+      endMs: myRange.endMs,
+      hasRange: Boolean(myFromIso),
+      isDynamic: false
+    };
+  }
+
+  if (myRes === 'max' || myEstimateBucketSteps(myFromIso, myToIso, myRes) > MY_MAX_CONTINUOUS_BUCKETS) {
+    const myStepMin = myResolveMaxStepMinutes(myFromIso, myToIso);
+    return {
+      resolution: 'max',
+      label: myStepMin + 'm',
+      stepMs: myStepMin * 60000,
+      originMs: Math.floor(myRange.startMs / 60000) * 60000,
+      endMs: myRange.endMs,
+      hasRange: Boolean(myFromIso),
+      isDynamic: true
+    };
+  }
+
+  return {
+    resolution: myRes,
+    label: myRes,
+    stepMs: myGetBucketStepMs(myRes),
+    originMs: myRange.startMs,
+    endMs: myRange.endMs,
+    hasRange: Boolean(myFromIso),
+    isDynamic: false
+  };
+}
+
+/**
+ * Format timestamp into fixed-calendar or origin-anchored dynamic bucket key.
  * @param {string|Date|number} myDateVal - Date value.
- * @param {string} myResolution - Target resolution (1d, 1h, 30m, 15m, 5m, 1m).
+ * @param {string|Object} myResolutionOrSpec - Resolution code or aggregation spec.
  * @param {string} myTz - Time zone string.
  * @return {string} Bucket key string.
  */
-function myGetBucketKey(myDateVal, myResolution, myTz) {
+function myGetBucketKey(myDateVal, myResolutionOrSpec, myTz) {
   const myDate = new Date(myDateVal);
   if (isNaN(myDate.getTime())) return '';
   const myTimezone = myTz || MY_DEFAULT_TIMEZONE;
 
+  if (myResolutionOrSpec && typeof myResolutionOrSpec === 'object' && myResolutionOrSpec.isDynamic) {
+    const myStepIndex = Math.max(0, Math.floor((myDate.getTime() - myResolutionOrSpec.originMs) / myResolutionOrSpec.stepMs));
+    return Utilities.formatDate(new Date(myResolutionOrSpec.originMs + (myStepIndex * myResolutionOrSpec.stepMs)), myTimezone, 'yyyy-MM-dd HH:mm');
+  }
+
+  const myResolution = (myResolutionOrSpec && typeof myResolutionOrSpec === 'object') ? myResolutionOrSpec.resolution : myResolutionOrSpec;
   if (myResolution === '1d') {
     return Utilities.formatDate(myDate, myTimezone, 'yyyy-MM-dd');
   }
@@ -101,19 +198,9 @@ function myGetBucketKey(myDateVal, myResolution, myTz) {
     return Utilities.formatDate(myDate, myTimezone, 'yyyy-MM-dd HH:00');
   }
 
-  const myDateStr = Utilities.formatDate(myDate, myTimezone, 'yyyy-MM-dd HH:mm');
-  const myParts = myDateStr.split(' ');
-  const myYmd = myParts[0];
+  const myParts = Utilities.formatDate(myDate, myTimezone, 'yyyy-MM-dd HH:mm').split(' ');
   const myHm = myParts[1].split(':');
-  const myH = myHm[0];
-  const myM = parseInt(myHm[1], 10);
-
-  let myStep = 1;
-  if (myResolution === '30m') myStep = 30;
-  else if (myResolution === '15m') myStep = 15;
-  else if (myResolution === '5m') myStep = 5;
-
-  const myBucketM = Math.floor(myM / myStep) * myStep;
-  const myPaddedM = myBucketM < 10 ? '0' + myBucketM : '' + myBucketM;
-  return myYmd + ' ' + myH + ':' + myPaddedM;
+  const myStep = myResolution === '30m' ? 30 : (myResolution === '15m' ? 15 : (myResolution === '5m' ? 5 : 1));
+  const myBucketM = Math.floor(parseInt(myHm[1], 10) / myStep) * myStep;
+  return myParts[0] + ' ' + myHm[0] + ':' + (myBucketM < 10 ? '0' + myBucketM : '' + myBucketM);
 }

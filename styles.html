@@ -45,7 +45,7 @@
     min-height: 100vh;
     line-height: 1.5;
     padding: 24px;
-    background-image: 
+    background-image:
       radial-gradient(circle at 15% 15%, hsla(217, 91%, 60%, 0.08) 0%, transparent 40%),
       radial-gradient(circle at 85% 85%, hsla(142, 71%, 45%, 0.05) 0%, transparent 40%);
   }
@@ -510,7 +510,8 @@
     margin-bottom: 6px;
   }
 
-  .my-input, .my-range {
+  .my-input,
+  .my-range {
     width: 100%;
     padding: 10px 14px;
     border-radius: var(--my-radius-md);
@@ -538,7 +539,9 @@
   }
 
   @keyframes mySpin {
-    to { transform: rotate(360deg); }
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   .my-loading .my-spinner {
@@ -749,10 +752,14 @@
     transition: all 0.2s ease;
   }
 
-  .my-pill-btn:hover {
+  .my-pill-btn:hover:not(:disabled) {
     color: var(--my-text-primary);
     background: var(--my-bg-card-hover);
     border-color: var(--my-border-focus);
+  }
+
+  .my-pill-btn.my-res-hidden {
+    display: none;
   }
 
   .my-pill-btn.my-active-preset {
@@ -761,4 +768,11 @@
     border-color: var(--my-accent);
   }
 
+  .my-pill-btn.my-active-preset:disabled {
+    color: hsla(210, 40%, 98%, 0.52);
+    background: hsla(217, 91%, 60%, 0.28);
+    border-color: transparent;
+    box-shadow: none;
+    cursor: default;
+  }
 </style>

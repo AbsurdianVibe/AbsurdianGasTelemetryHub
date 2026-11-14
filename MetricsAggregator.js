@@ -65,13 +65,32 @@ function myCreateSeriesBucket_(myBucketKey) {
 }
 
 /**
+ * Pre-fill empty continuous series buckets when count stays within safe limit.
+ * @param {Object} mySeriesBuckets - Mutable map of series buckets keyed by label.
+ * @param {Object} mySpec - Effective aggregation specification.
+ * @param {string} myTimezone - Target timezone name.
+ */
+function myPrefillSeriesBuckets_(mySeriesBuckets, mySpec, myTimezone) {
+  if (!mySpec.hasRange || mySpec.endMs < mySpec.originMs) return;
+  const myStepsCount = Math.floor((mySpec.endMs - mySpec.originMs) / mySpec.stepMs);
+  if (myStepsCount < 0 || myStepsCount > MY_MAX_CONTINUOUS_BUCKETS) return;
+
+  for (let myCurrMs = mySpec.originMs; myCurrMs <= mySpec.endMs; myCurrMs += mySpec.stepMs) {
+    const myFillKey = myGetBucketKey(new Date(myCurrMs), mySpec, myTimezone);
+    if (myFillKey && !mySeriesBuckets[myFillKey]) {
+      mySeriesBuckets[myFillKey] = myCreateSeriesBucket_(myFillKey);
+    }
+  }
+}
+
+/**
  * Aggregate processes dataset into frontend DTO.
  * @param {Array<IProcessRow>} myRows - Raw process rows.
  * @param {number} myQuotaLimitSec - Quota limit in seconds.
  * @param {string} myTz - Timezone.
  * @param {string} [myFromIso] - Start ISO timestamp.
  * @param {string} [myToIso] - End ISO timestamp.
- * @param {string} [myRequestedResolution] - Target resolution (auto, 1d, 1h, 30m, 15m, 5m, 1m).
+ * @param {string} [myRequestedResolution] - Target resolution (auto, max, 1d, 1h, 30m, 15m, 5m, 1m).
  * @return {Object} Aggregated dashboard DTO.
  */
 function myAggregateDataset(myRows, myQuotaLimitSec, myTz, myFromIso, myToIso, myRequestedResolution) {
@@ -85,26 +104,10 @@ function myAggregateDataset(myRows, myQuotaLimitSec, myTz, myFromIso, myToIso, m
   const myYesterday = new Date(Date.now() - 86400000);
   const myLastFullDayKey = myGetDayKey(myYesterday, myTimezone);
 
-  let myEffectiveResolution = myRequestedResolution;
-  if (!myEffectiveResolution || myEffectiveResolution === 'auto') {
-    myEffectiveResolution = myResolveAutoResolution(myFromIso, myToIso);
-  }
+  const mySpec = myResolveEffectiveAggregationSpec(myFromIso, myToIso, myRequestedResolution);
+  const myEffectiveResolution = mySpec.label;
 
-  // Pre-fill continuous buckets if range is within safe visual limit (up to 1000 points)
-  if (myFromIso && myToIso) {
-    const myStartMs = new Date(myFromIso).getTime();
-    const myEndMs = new Date(myToIso).getTime();
-    const myStepMs = myGetBucketStepMs(myEffectiveResolution);
-    const myStepsCount = Math.floor((myEndMs - myStartMs) / myStepMs);
-    if (myStepsCount > 0 && myStepsCount <= 1000) {
-      for (let myCurrMs = myStartMs; myCurrMs <= myEndMs; myCurrMs += myStepMs) {
-        const myFillKey = myGetBucketKey(new Date(myCurrMs), myEffectiveResolution, myTimezone);
-        if (myFillKey && !mySeriesBuckets[myFillKey]) {
-          mySeriesBuckets[myFillKey] = myCreateSeriesBucket_(myFillKey);
-        }
-      }
-    }
-  }
+  myPrefillSeriesBuckets_(mySeriesBuckets, mySpec, myTimezone);
 
   myRows.forEach(function (myRow) {
     myTotalDurationSec += myRow.durationSec;
@@ -122,7 +125,7 @@ function myAggregateDataset(myRows, myQuotaLimitSec, myTz, myFromIso, myToIso, m
     }
 
     // 1. Time-series bucket accumulation
-    const myBucketKey = myGetBucketKey(myRow.startTime, myEffectiveResolution, myTimezone);
+    const myBucketKey = myGetBucketKey(myRow.startTime, mySpec, myTimezone);
     if (myBucketKey) {
       if (!mySeriesBuckets[myBucketKey]) {
         mySeriesBuckets[myBucketKey] = myCreateSeriesBucket_(myBucketKey);

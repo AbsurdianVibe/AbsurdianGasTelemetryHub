@@ -1566,7 +1566,7 @@
     if (myEndBucket.length === 10) {
       myEndDate.setHours(23, 59, 59, 999);
     } else {
-      const myStepMs = myGetClientBucketStepMs_(myGlobalResolution || '1h');
+      const myStepMs = myEffectiveChartStepMs_ || myGetClientBucketStepMs_(myGlobalResolution || '1h');
       myEndDate = new Date(myEndDate.getTime() + myStepMs - 1000);
     }
 
@@ -1866,18 +1866,11 @@
   }
 
   /**
-   * Highlight active resolution button.
+   * Highlight active resolution button and refresh >1000 bucket constraints.
    * @param {string} myResKey - Resolution key.
    */
   function myHighlightResolutionBtn_(myResKey) {
-    document.querySelectorAll('.my-res-btn').forEach(function (myBtn) {
-      myBtn.classList.remove('my-active-preset');
-    });
-    const myBtnId = 'myResBtn' + (myResKey || 'auto').charAt(0).toUpperCase() + (myResKey || 'auto').slice(1);
-    const myTargetBtn = document.getElementById(myBtnId);
-    if (myTargetBtn) {
-      myTargetBtn.classList.add('my-active-preset');
-    }
+    myUpdateResolutionButtonsState_(myGlobalFromIso, myGlobalToIso, myResKey);
   }
 
   /**
@@ -1988,11 +1981,13 @@
 
   /**
    * Set dynamic or manual resolution and refresh views.
-   * @param {string} myResKey - Target resolution (auto, 1d, 1h, 30m, 15m, 5m, 1m).
+   * @param {string} myResKey - Target resolution (auto, max, 1d, 1h, 30m, 15m, 5m, 1m).
    */
   function mySetResolution(myResKey) {
-    myGlobalResolution = myResKey || 'auto';
-    myHighlightResolutionBtn_(myGlobalResolution);
+    const myTargetRes = myResKey || 'auto';
+    if (!myIsClientResolutionAllowed_(myTargetRes, myGlobalFromIso, myGlobalToIso)) return;
+    myGlobalResolution = myTargetRes;
+    myUpdateResolutionButtonsState_(myGlobalFromIso, myGlobalToIso);
     mySaveViewState_();
     myRenderFromLocalCache_(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
   }
@@ -3066,48 +3061,207 @@
     return '1m';
   }
 
+  const MY_MAX_CONTINUOUS_BUCKETS = 1000;
+  let myEffectiveChartStepMs_ = 3600000;
+
+  /**
+   * Parse time range bounds into millisecond timestamps.
+   * @param {string} myFromIso - Start ISO timestamp.
+   * @param {string} myToIso - End ISO timestamp.
+   * @return {Object} Start and end millisecond bounds.
+   */
+  function myParseClientRangeMs_(myFromIso, myToIso) {
+    const myStartMs = myFromIso ? new Date(myFromIso).getTime() : 0;
+    const myEndMs = myToIso ? new Date(myToIso).getTime() : Date.now();
+    return {
+      startMs: isNaN(myStartMs) ? 0 : myStartMs,
+      endMs: isNaN(myEndMs) ? Date.now() : myEndMs
+    };
+  }
+
   /**
    * Get bucket step in milliseconds.
-   * @param {string} myResolution - Resolution code.
+   * @param {string} myResolution - Resolution code or dynamic minute string.
    * @return {number} Milliseconds.
    */
   function myGetClientBucketStepMs_(myResolution) {
     if (myResolution === '1d') return 86400000;
     if (myResolution === '1h') return 3600000;
-    if (myResolution === '30m') return 1800000;
-    if (myResolution === '15m') return 900000;
-    if (myResolution === '5m') return 300000;
+    if (myResolution && myResolution.endsWith('m')) {
+      const myMins = parseInt(myResolution, 10);
+      if (!isNaN(myMins) && myMins > 0) return myMins * 60000;
+    }
     return 60000;
   }
 
   /**
-   * Format date into bucket key in local timezone.
+   * Count bucket intervals in time range for given fixed resolution.
+   * @param {string} myFromIso - Start ISO timestamp.
+   * @param {string} myToIso - End ISO timestamp.
+   * @param {string} myResolution - Target resolution code.
+   * @return {number} Estimated bucket interval count.
+   */
+  function myEstimateClientBucketSteps_(myFromIso, myToIso, myResolution) {
+    const myRange = myParseClientRangeMs_(myFromIso, myToIso);
+    if (!myFromIso || myRange.endMs <= myRange.startMs) return 0;
+    return Math.floor((myRange.endMs - myRange.startMs) / myGetClientBucketStepMs_(myResolution));
+  }
+
+  /**
+   * Check whether resolution fits MY_MAX_CONTINUOUS_BUCKETS cap in given window.
+   * @param {string} myResKey - Resolution key (auto, max, 1d, 1h, 30m, 15m, 5m, 1m).
+   * @param {string} myFromIso - Start ISO timestamp.
+   * @param {string} myToIso - End ISO timestamp.
+   * @return {boolean} True when resolution is permitted.
+   */
+  function myIsClientResolutionAllowed_(myResKey, myFromIso, myToIso) {
+    if (!myResKey || myResKey === 'auto' || myResKey === 'max') return true;
+    return myEstimateClientBucketSteps_(myFromIso, myToIso, myResKey) <= MY_MAX_CONTINUOUS_BUCKETS;
+  }
+
+  /**
+   * Resolve whole-minute step keeping bucket count within MY_MAX_CONTINUOUS_BUCKETS.
+   * @param {string} myFromIso - Start ISO timestamp.
+   * @param {string} myToIso - End ISO timestamp.
+   * @return {number} Minute step size (at least 1).
+   */
+  function myResolveClientMaxStepMinutes_(myFromIso, myToIso) {
+    const myRange = myParseClientRangeMs_(myFromIso, myToIso);
+    if (!myFromIso || myRange.endMs <= myRange.startMs) return 1;
+    return Math.max(1, Math.ceil(((myRange.endMs - myRange.startMs) / 60000) / MY_MAX_CONTINUOUS_BUCKETS));
+  }
+
+  /**
+   * Resolve effective client aggregation spec for auto, max, or fixed resolution.
+   * @param {string} myFromIso - Start ISO timestamp.
+   * @param {string} myToIso - End ISO timestamp.
+   * @param {string} [myRequestedResolution] - Requested resolution key.
+   * @return {Object} Effective aggregation descriptor.
+   */
+  function myResolveClientAggregationSpec_(myFromIso, myToIso, myRequestedResolution) {
+    const myRange = myParseClientRangeMs_(myFromIso, myToIso);
+    const myRes = myRequestedResolution || 'auto';
+
+    if (myRes === 'auto') {
+      const myAutoRes = myResolveClientAutoResolution_(myFromIso, myToIso);
+      return {
+        resolution: myAutoRes,
+        label: myAutoRes,
+        stepMs: myGetClientBucketStepMs_(myAutoRes),
+        originMs: myRange.startMs,
+        endMs: myRange.endMs,
+        hasRange: Boolean(myFromIso),
+        isDynamic: false
+      };
+    }
+
+    if (myRes === 'max' || myEstimateClientBucketSteps_(myFromIso, myToIso, myRes) > MY_MAX_CONTINUOUS_BUCKETS) {
+      const myStepMin = myResolveClientMaxStepMinutes_(myFromIso, myToIso);
+      return {
+        resolution: 'max',
+        label: myStepMin + 'm',
+        stepMs: myStepMin * 60000,
+        originMs: Math.floor(myRange.startMs / 60000) * 60000,
+        endMs: myRange.endMs,
+        hasRange: Boolean(myFromIso),
+        isDynamic: true
+      };
+    }
+
+    return {
+      resolution: myRes,
+      label: myRes,
+      stepMs: myGetClientBucketStepMs_(myRes),
+      originMs: myRange.startMs,
+      endMs: myRange.endMs,
+      hasRange: Boolean(myFromIso),
+      isDynamic: false
+    };
+  }
+
+  /**
+   * Build tooltip text describing resolution button limit or Max granularity.
+   * @param {string} myResKey - Resolution key.
+   * @param {boolean} myIsAllowed - Whether resolution fits bucket budget.
+   * @param {string} myFromIso - Start ISO timestamp.
+   * @param {string} myToIso - End ISO timestamp.
+   * @return {string} Tooltip text or empty string.
+   */
+  function myBuildResolutionTooltip_(myResKey, myIsAllowed, myFromIso, myToIso) {
+    if (myResKey === 'max') {
+      return 'Maksymalna rozdzielczość (~' + MY_MAX_CONTINUOUS_BUCKETS + ' punktów; obecnie ' +
+        myResolveClientMaxStepMinutes_(myFromIso, myToIso) + 'm)';
+    }
+    if (myIsAllowed) return '';
+    return 'Przekracza limit ' + MY_MAX_CONTINUOUS_BUCKETS + ' punktów (' +
+      myEstimateClientBucketSteps_(myFromIso, myToIso, myResKey) + ' pkt) — wykres używa trybu Max';
+  }
+
+  /**
+   * Sync visibility, disabled state, and active pill highlight on resolution bar.
+   * @param {string} myFromIso - Applied window start ISO timestamp.
+   * @param {string} myToIso - Applied window end ISO timestamp.
+   * @param {string} [myOverrideSelected] - Optional selected key override.
+   */
+  function myUpdateResolutionButtonsState_(myFromIso, myToIso, myOverrideSelected) {
+    const mySelectedKey = myOverrideSelected || myGlobalResolution || 'auto';
+    document.querySelectorAll('.my-res-btn').forEach(function (myBtn) {
+      const myResKey = myBtn.dataset.res || myBtn.id.replace('myResBtn', '').toLowerCase();
+      const myIsAllowed = myIsClientResolutionAllowed_(myResKey, myFromIso, myToIso);
+      const myIsSelected = myResKey === mySelectedKey;
+      myBtn.classList.toggle('my-res-hidden', !myIsAllowed && !myIsSelected);
+      myBtn.disabled = !myIsAllowed;
+      myBtn.classList.toggle('my-active-preset', myIsSelected);
+      myBtn.title = myBuildResolutionTooltip_(myResKey, myIsAllowed, myFromIso, myToIso);
+    });
+  }
+
+  /**
+   * Format date into fixed-calendar or origin-anchored dynamic bucket key.
    * @param {Date|string|number} myDateVal - Date value.
-   * @param {string} myResolution - Target resolution.
+   * @param {string|Object} myResolutionOrSpec - Resolution code or aggregation spec.
    * @return {string} Bucket key string.
    */
-  function myGetClientBucketKey_(myDateVal, myResolution) {
+  function myGetClientBucketKey_(myDateVal, myResolutionOrSpec) {
     const myDate = new Date(myDateVal);
     if (isNaN(myDate.getTime())) return '';
 
-    const myPad = function (n) { return n < 10 ? '0' + n : '' + n; };
-    const myYmd = myDate.getFullYear() + '-' + myPad(myDate.getMonth() + 1) + '-' + myPad(myDate.getDate());
-
-    if (myResolution === '1d') {
-      return myYmd;
-    }
-    const myH = myPad(myDate.getHours());
-    if (myResolution === '1h') {
-      return myYmd + ' ' + myH + ':00';
+    if (myResolutionOrSpec && typeof myResolutionOrSpec === 'object' && myResolutionOrSpec.isDynamic) {
+      const myStepIdx = Math.max(0, Math.floor((myDate.getTime() - myResolutionOrSpec.originMs) / myResolutionOrSpec.stepMs));
+      const myBucketDate = new Date(myResolutionOrSpec.originMs + (myStepIdx * myResolutionOrSpec.stepMs));
+      return myBucketDate.getFullYear() + '-' + myPadZero2_(myBucketDate.getMonth() + 1) + '-' +
+        myPadZero2_(myBucketDate.getDate()) + ' ' + myPadZero2_(myBucketDate.getHours()) + ':' +
+        myPadZero2_(myBucketDate.getMinutes());
     }
 
-    let myStep = 1;
-    if (myResolution === '30m') myStep = 30;
-    else if (myResolution === '15m') myStep = 15;
-    else if (myResolution === '5m') myStep = 5;
+    const myResolution = (myResolutionOrSpec && typeof myResolutionOrSpec === 'object') ? myResolutionOrSpec.resolution : myResolutionOrSpec;
+    const myYmd = myDate.getFullYear() + '-' + myPadZero2_(myDate.getMonth() + 1) + '-' + myPadZero2_(myDate.getDate());
+    if (myResolution === '1d') return myYmd;
 
+    const myH = myPadZero2_(myDate.getHours());
+    if (myResolution === '1h') return myYmd + ' ' + myH + ':00';
+
+    const myStep = myResolution === '30m' ? 30 : (myResolution === '15m' ? 15 : (myResolution === '5m' ? 5 : 1));
     const myBucketM = Math.floor(myDate.getMinutes() / myStep) * myStep;
-    return myYmd + ' ' + myH + ':' + myPad(myBucketM);
+    return myYmd + ' ' + myH + ':' + myPadZero2_(myBucketM);
+  }
+
+  /**
+   * Pre-fill empty continuous client buckets within MY_MAX_CONTINUOUS_BUCKETS cap.
+   * @param {Object} mySeriesBuckets - Mutable bucket lookup map.
+   * @param {Object} mySpec - Effective aggregation spec.
+   */
+  function myPrefillClientSeriesBuckets_(mySeriesBuckets, mySpec) {
+    if (!mySpec.hasRange || mySpec.endMs < mySpec.originMs) return;
+    const myStepsCount = Math.floor((mySpec.endMs - mySpec.originMs) / mySpec.stepMs);
+    if (myStepsCount < 0 || myStepsCount > MY_MAX_CONTINUOUS_BUCKETS) return;
+
+    for (let myCurrMs = mySpec.originMs; myCurrMs <= mySpec.endMs; myCurrMs += mySpec.stepMs) {
+      const myFillKey = myGetClientBucketKey_(myCurrMs, mySpec);
+      if (myFillKey && !mySeriesBuckets[myFillKey]) {
+        mySeriesBuckets[myFillKey] = myCreateClientSeriesBucket_(myFillKey);
+      }
+    }
   }
 
   /**
@@ -3146,27 +3300,13 @@
     const myYesterday = new Date(Date.now() - 86400000);
     const myLastFullDayKey = myYesterday.getFullYear() + '-' + myPad(myYesterday.getMonth() + 1) + '-' + myPad(myYesterday.getDate());
 
-    let myEffectiveResolution = myRequestedResolution;
-    if (!myEffectiveResolution || myEffectiveResolution === 'auto') {
-      myEffectiveResolution = myResolveClientAutoResolution_(myFromIso, myToIso);
-    }
+    const mySpec = myResolveClientAggregationSpec_(myFromIso, myToIso, myRequestedResolution);
+    const myEffectiveResolution = mySpec.label;
 
     const myFromMs = myFromIso ? new Date(myFromIso).getTime() : 0;
     const myToMs = myToIso ? new Date(myToIso).getTime() : Infinity;
 
-    // Pre-fill continuous buckets up to 1000 points
-    if (myFromIso && myToIso && myToMs < Infinity) {
-      const myStepMs = myGetClientBucketStepMs_(myEffectiveResolution);
-      const myStepsCount = Math.floor((myToMs - myFromMs) / myStepMs);
-      if (myStepsCount > 0 && myStepsCount <= 1000) {
-        for (let myCurrMs = myFromMs; myCurrMs <= myToMs; myCurrMs += myStepMs) {
-          const myFillKey = myGetClientBucketKey_(myCurrMs, myEffectiveResolution);
-          if (myFillKey && !mySeriesBuckets[myFillKey]) {
-            mySeriesBuckets[myFillKey] = myCreateClientSeriesBucket_(myFillKey);
-          }
-        }
-      }
-    }
+    myPrefillClientSeriesBuckets_(mySeriesBuckets, mySpec);
 
     let myFilteredCount = 0;
     myProcesses.forEach(function (myRow) {
@@ -3187,7 +3327,7 @@
       if (myIsFail) myTotalFailures++;
 
       // 1. Time-series bucket accumulation
-      const myBucketKey = myGetClientBucketKey_(myRow.startTime, myEffectiveResolution);
+      const myBucketKey = myGetClientBucketKey_(myRow.startTime, mySpec);
       if (myBucketKey) {
         if (!mySeriesBuckets[myBucketKey]) {
           mySeriesBuckets[myBucketKey] = myCreateClientSeriesBucket_(myBucketKey);
@@ -3301,6 +3441,7 @@
       dailySeries: mySeriesList,
       resolution: myRequestedResolution || 'auto',
       effectiveResolution: myEffectiveResolution,
+      effectiveStepMs: mySpec.stepMs,
       projects: myProjectsList
     };
   }
@@ -3332,12 +3473,17 @@
    * @param {string} [myResolution] - Target resolution.
    */
   function myRenderFromLocalCache_(myFromIso, myToIso, myResolution) {
+    const myTargetFromIso = myFromIso || myGlobalFromIso;
+    const myTargetToIso = myToIso || myGlobalToIso;
+    myUpdateResolutionButtonsState_(myTargetFromIso, myTargetToIso);
+
     const myAggregated = myAggregateClientDataset_(
       myCachedProcesses_,
-      myFromIso || myGlobalFromIso,
-      myToIso || myGlobalToIso,
+      myTargetFromIso,
+      myTargetToIso,
       myResolution || myGlobalResolution
     );
+    myEffectiveChartStepMs_ = myAggregated.effectiveStepMs || myGetClientBucketStepMs_(myAggregated.effectiveResolution);
 
     const myChartTitle = document.getElementById('myChartSectionTitle');
     if (myChartTitle) {
@@ -3421,6 +3567,7 @@
    * @param {string} [myResolution] - Target resolution.
    */
   async function myBootstrapInitialDataset_(myFromIso, myToIso, myResolution) {
+    myUpdateResolutionButtonsState_(myFromIso || myGlobalFromIso, myToIso || myGlobalToIso);
     mySetDashboardLoadingState_(true, 'Pobieranie bazy procesów z arkusza...');
     try {
       const myRes = await myCallServer('myApiGetInitialDataset');
@@ -3476,6 +3623,7 @@
    * @param {string} [myResolution] - Resolution code.
    */
   async function myLoadDashboard(myFromIso, myToIso, myResolution) {
+    myUpdateResolutionButtonsState_(myFromIso || myGlobalFromIso, myToIso || myGlobalToIso);
     if (myCachedProcesses_ && myCachedProcesses_.length > 0) {
       await myEnsureFreshnessAndRender_(myFromIso, myToIso, myResolution);
       return;
