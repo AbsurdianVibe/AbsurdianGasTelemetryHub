@@ -760,13 +760,98 @@
   }
 
   /**
+   * Extract numeric time-series values array for a single project.
+   * @param {Array<Object>} myDailySeries - Time bucket series.
+   * @param {string} myProjName - Project identifier.
+   * @param {string} myFieldKey - Bucket map field name.
+   * @param {boolean} myNullWhenMissing - True to return null instead of 0 for gaps.
+   * @return {Array<number|null>} Values aligned with series buckets.
+   */
+  function myBuildSeriesValues_(myDailySeries, myProjName, myFieldKey, myNullWhenMissing) {
+    return myDailySeries.map(function (myDay) {
+      const myMap = myDay[myFieldKey];
+      if (!myMap || typeof myMap[myProjName] === 'undefined') {
+        return myNullWhenMissing ? null : 0;
+      }
+      return Number(myMap[myProjName].toFixed(1));
+    });
+  }
+
+  /**
+   * Resolve stacked area point radius prioritizing buckets with non-zero activity jumps.
+   * @param {Object} myCtx - Chart.js scriptable point context.
+   * @param {number} myLabelsCount - Total number of x-axis buckets.
+   * @param {Array<number>|undefined} myDeltaData - Per-bucket jump durations.
+   * @param {boolean} myIsHover - True when resolving hover radius.
+   * @return {number} Point radius in pixels.
+   */
+  function myGetStackedPointRadius_(myCtx, myLabelsCount, myDeltaData, myIsHover) {
+    if (!myCtx || typeof myCtx.dataIndex !== 'number') return 0;
+    if (myDeltaData) {
+      const myDelta = myDeltaData[myCtx.dataIndex] || 0;
+      if (myIsHover) return myDelta > 0 ? 5 : (myCtx.raw > 0 ? 3 : 0);
+      return myDelta > 0 ? (myLabelsCount > 50 ? 0 : 2.5) : 0;
+    }
+    if (!myCtx.raw || myCtx.raw <= 0) return 0;
+    return myIsHover ? 4 : (myLabelsCount > 50 ? 0 : 2);
+  }
+
+  /**
+   * Read current bucket delta duration for a tooltip context item.
+   * @param {Object} myCtxItem - Chart.js tooltip item.
+   * @return {number} Bucket delta seconds.
+   */
+  function myGetTooltipDeltaSec_(myCtxItem) {
+    const myDeltaArr = myCtxItem && myCtxItem.dataset && myCtxItem.dataset.deltaData;
+    return myDeltaArr ? (myDeltaArr[myCtxItem.dataIndex] || 0) : 0;
+  }
+
+  /**
+   * Format stacked tooltip project row with current jump and daily cumulative sum.
+   * @param {Object} myCtxItem - Chart.js tooltip item.
+   * @param {boolean} myIsDaily - True when X axis granularity is 1d.
+   * @return {string} Formatted tooltip line.
+   */
+  function myFormatStackedTooltipLabel_(myCtxItem, myIsDaily) {
+    if (myIsDaily) {
+      return ' ' + myFormatDurationFixed_(myCtxItem.raw) + ' - ' + myCtxItem.dataset.label;
+    }
+    const myDeltaSec = myGetTooltipDeltaSec_(myCtxItem);
+    return ' +' + myFormatDurationFixed_(myDeltaSec) + ' | Σ ' + myFormatDurationFixed_(myCtxItem.raw) + ' - ' + myCtxItem.dataset.label;
+  }
+
+  /**
+   * Format single-line stacked tooltip footer with bucket jump, daily total, and quota share.
+   * @param {Array<Object>} myTooltipItems - Visible tooltip items.
+   * @param {boolean} myIsDaily - True when X axis granularity is 1d.
+   * @param {number} myQuotaLimitSec - Daily GAS quota limit in seconds.
+   * @return {string} Single-line footer summary.
+   */
+  function myFormatStackedTooltipFooter_(myTooltipItems, myIsDaily, myQuotaLimitSec) {
+    if (!myTooltipItems || !myTooltipItems.length) return '';
+    let myCumTotalSec = 0;
+    let myDeltaTotalSec = 0;
+    myTooltipItems.forEach(function (myIt) {
+      if (!myIt || typeof myIt.raw !== 'number') return;
+      myCumTotalSec += myIt.raw;
+      myDeltaTotalSec += myGetTooltipDeltaSec_(myIt);
+    });
+    if (myCumTotalSec <= 0) return '';
+    const myPctStr = myQuotaLimitSec > 0 ? ' (' + ((myCumTotalSec / myQuotaLimitSec) * 100).toFixed(1) + '%)' : '';
+    if (myIsDaily) {
+      return myFormatDurationFixed_(myCumTotalSec) + ' - Suma doby' + myPctStr;
+    }
+    return '+' + myFormatDurationFixed_(myDeltaTotalSec) + ' skok | Σ ' + myFormatDurationFixed_(myCumTotalSec) + ' doba' + myPctStr;
+  }
+
+  /**
    * Render time-series chart for project metrics (stacked area or overlay multi-line).
    * @param {string} myCanvasId - Canvas element ID.
    * @param {Object|null} myExistingInstance - Existing Chart.js instance.
    * @param {Array<Object>} myDailySeries - Time bucket series.
    * @param {string} myProjectFieldKey - Field in bucket holding project map.
    * @param {string} [myChartMode] - STACKED or OVERLAY mode.
-   * @param {Object} [myLimitOptions] - Limit line configuration.
+   * @param {Object} [myLimitOptions] - Limit line and cumulative options.
    * @return {Object|null} New Chart.js instance.
    */
   function myRenderTimeSeriesChart_(myCanvasId, myExistingInstance, myDailySeries, myProjectFieldKey, myChartMode, myLimitOptions) {
@@ -785,6 +870,10 @@
     const myIsOverlay = myChartMode === MY_CHART_MODE.OVERLAY;
     const myLabels = myDailySeries.map(function (d) { return d.dayKey || d.bucketKey; });
     const myCalendarData = myCollectCalendarBoundaries_(myLabels);
+    const myIsCumulativeDaily = Boolean(!myIsOverlay && myLimitOptions && myLimitOptions.isCumulativeDaily);
+    const myDeltaFieldKey = myIsCumulativeDaily ? (myLimitOptions.deltaFieldKey || '') : '';
+    const myIsSubdailyCumulative = myIsCumulativeDaily && !myCalendarData.isDaily;
+    const myQuotaLimitSec = (myLimitOptions && myLimitOptions.limitValue) || 0;
 
     const myProjectNames = [];
     myDailySeries.forEach(function (myDay) {
@@ -803,30 +892,27 @@
     const myDatasets = myOrderedProjects.map(function (myProjName) {
       const myColor = myGetProjectColor_(myProjName);
       const myBridgeColor = myColor.border.replace('hsl(', 'hsla(').replace(')', ', 0.3)');
-      const myData = myDailySeries.map(function (myDay) {
-        const myMap = myDay[myProjectFieldKey];
-        if (!myMap || typeof myMap[myProjName] === 'undefined') {
-          return myIsOverlay ? null : 0;
-        }
-        return Number(myMap[myProjName].toFixed(1));
-      });
+      const myData = myBuildSeriesValues_(myDailySeries, myProjName, myProjectFieldKey, myIsOverlay);
+      const myDeltaData = myDeltaFieldKey ? myBuildSeriesValues_(myDailySeries, myProjName, myDeltaFieldKey, false) : undefined;
 
       return {
         label: myProjName,
         data: myData,
+        deltaData: myDeltaData,
         fnNames: myIsOverlay ? myDailySeries.map(function (myDay) {
           return (myDay.byProjectMaxFn && myDay.byProjectMaxFn[myProjName]) || '';
         }) : undefined,
         borderColor: myColor.border,
         backgroundColor: myIsOverlay ? 'transparent' : myColor.fill,
         fill: !myIsOverlay,
-        tension: 0.1,
+        stepped: false,
+        tension: myIsSubdailyCumulative ? 0 : 0.1,
         borderWidth: 2,
-        pointRadius: myIsOverlay ? 1 : function (myCtx) {
-          return (myCtx && myCtx.raw > 0) ? (myLabels.length > 50 ? 0 : 2) : 0;
+        pointRadius: myIsOverlay ? 1 : function (myPtCtx) {
+          return myGetStackedPointRadius_(myPtCtx, myLabels.length, myDeltaData, false);
         },
-        pointHoverRadius: myIsOverlay ? undefined : function (myCtx) {
-          return (myCtx && myCtx.raw > 0) ? 4 : 0;
+        pointHoverRadius: myIsOverlay ? undefined : function (myPtCtx) {
+          return myGetStackedPointRadius_(myPtCtx, myLabels.length, myDeltaData, true);
         },
         spanGaps: myIsOverlay,
         segment: myIsOverlay ? {
@@ -1090,18 +1176,20 @@
       CHANGE: Object.freeze({ cssVar: '--my-text-medium', fallback: 'hsl(213, 30%, 82%)' }),
       NORMAL: Object.freeze({ cssVar: '--my-text-secondary', fallback: 'hsl(215, 20%, 65%)' })
     });
+    const MY_TOOLTIP_BG_SPEC = Object.freeze({ cssVar: '--my-bg-base', fallback: 'hsl(222, 47%, 11%)' });
+    const MY_TOOLTIP_BORDER_COLOR = 'hsl(217, 33%, 32%)';
     const myRootStyles = getComputedStyle(document.documentElement);
     /**
      * Resolve CSS custom property color with fallback literal.
      * @param {Object} myColorSpec - Token name and fallback color pair.
      * @return {string} Resolved CSS color string.
      */
-    const myResolveXTickColor = function (myColorSpec) {
+    const myResolveCssColor = function (myColorSpec) {
       return myRootStyles.getPropertyValue(myColorSpec.cssVar).trim() || myColorSpec.fallback;
     };
     const myXTickColors = Object.freeze({
-      change: myResolveXTickColor(MY_X_TICK_COLOR_SPECS.CHANGE),
-      normal: myResolveXTickColor(MY_X_TICK_COLOR_SPECS.NORMAL)
+      change: myResolveCssColor(MY_X_TICK_COLOR_SPECS.CHANGE),
+      normal: myResolveCssColor(MY_X_TICK_COLOR_SPECS.NORMAL)
     });
 
     const myChartInstance = new Chart(myCtx, {
@@ -1169,6 +1257,10 @@
           tooltip: {
             position: 'myFollowCursor',
             animation: { duration: 0 },
+            backgroundColor: myResolveCssColor(MY_TOOLTIP_BG_SPEC),
+            borderColor: MY_TOOLTIP_BORDER_COLOR,
+            borderWidth: 1,
+            footerColor: myXTickColors.change,
             usePointStyle: myIsOverlay,
             boxWidth: myIsOverlay ? 14 : 10,
             boxHeight: myIsOverlay ? 14 : 10,
@@ -1188,6 +1280,9 @@
               labelPointStyle: myIsOverlay ? function () {
                 return { pointStyle: 'line', rotation: 0 };
               } : undefined,
+              labelTextColor: myIsSubdailyCumulative ? function (myCtxItem) {
+                return myGetTooltipDeltaSec_(myCtxItem) > 0 ? 'hsl(210, 40%, 98%)' : 'hsla(215, 20%, 65%, 0.72)';
+              } : undefined,
               labelColor: function (myCtxItem) {
                 const myDs = myCtxItem.dataset;
                 const myBorder = (myDs && myDs.borderColor) ? myDs.borderColor : 'hsl(217, 91%, 60%)';
@@ -1202,12 +1297,18 @@
                 if (myCtxItem.raw === null || typeof myCtxItem.raw === 'undefined') return '';
                 if (!myIsOverlay && myCtxItem.raw <= 0) return null;
                 if (myCtxItem.dataset && myCtxItem.dataset.isLimitLine) return null;
+                if (!myIsOverlay && myIsCumulativeDaily) {
+                  return myFormatStackedTooltipLabel_(myCtxItem, myCalendarData.isDaily);
+                }
                 const myFnName = (myIsOverlay && myCtxItem.dataset.fnNames) ? myCtxItem.dataset.fnNames[myCtxItem.dataIndex] : '';
                 const myFnSuffix = myFnName ? ' (' + myFnName + ')' : '';
                 return ' ' + myFormatDurationFixed_(myCtxItem.raw) + ' - ' + myCtxItem.dataset.label + myFnSuffix;
               },
               footer: function (myTooltipItems) {
                 if (myIsOverlay || !myTooltipItems || !myTooltipItems.length) return '';
+                if (myIsCumulativeDaily) {
+                  return myFormatStackedTooltipFooter_(myTooltipItems, myCalendarData.isDaily, myQuotaLimitSec);
+                }
                 let myTotalSec = 0;
                 myTooltipItems.forEach(function (myIt) {
                   if (myIt && typeof myIt.raw === 'number') {
@@ -1601,12 +1702,14 @@
       'myChartDailyQuota',
       myDailyQuotaChartInstance,
       myDailySeries,
-      'byProject',
+      'byProjectCumulative',
       MY_CHART_MODE.STACKED,
       {
         limitValue: myQuotaSec,
         toggleId: 'myToggleDailyQuotaLimitLine',
-        label: myLabel
+        label: myLabel,
+        deltaFieldKey: 'byProject',
+        isCumulativeDaily: true
       }
     );
   }
@@ -3197,8 +3300,29 @@
       myEstimateClientBucketSteps_(myFromIso, myToIso, myResKey) + ' pkt) — wykres używa trybu Max';
   }
 
+  const MY_DYNAMIC_RESOLUTION_LABELS = Object.freeze({
+    auto: 'Auto',
+    max: 'Max'
+  });
+
   /**
-   * Sync visibility, disabled state, and active pill highlight on resolution bar.
+   * Format dynamic button label with resolved granularity for Auto and Max buttons.
+   * @param {string} myResKey - Resolution key.
+   * @param {string} myFromIso - Start ISO timestamp.
+   * @param {string} myToIso - End ISO timestamp.
+   * @return {string|null} Formatted button label or null for fixed buttons.
+   */
+  function myFormatResolutionButtonLabel_(myResKey, myFromIso, myToIso) {
+    const myBaseLabel = MY_DYNAMIC_RESOLUTION_LABELS[myResKey];
+    if (!myBaseLabel) return null;
+
+    const myRange = myParseClientRangeMs_(myFromIso, myToIso);
+    if (!myFromIso || myRange.endMs <= myRange.startMs) return myBaseLabel;
+    return myBaseLabel + ' (' + myResolveClientAggregationSpec_(myFromIso, myToIso, myResKey).label + ')';
+  }
+
+  /**
+   * Sync visibility, dynamic Auto/Max labels, disabled state, and active pill highlight on resolution bar.
    * @param {string} myFromIso - Applied window start ISO timestamp.
    * @param {string} myToIso - Applied window end ISO timestamp.
    * @param {string} [myOverrideSelected] - Optional selected key override.
@@ -3209,6 +3333,10 @@
       const myResKey = myBtn.dataset.res || myBtn.id.replace('myResBtn', '').toLowerCase();
       const myIsAllowed = myIsClientResolutionAllowed_(myResKey, myFromIso, myToIso);
       const myIsSelected = myResKey === mySelectedKey;
+      const myBtnLabel = myFormatResolutionButtonLabel_(myResKey, myFromIso, myToIso);
+      if (myBtnLabel) {
+        myBtn.innerText = myBtnLabel;
+      }
       myBtn.classList.toggle('my-res-hidden', !myIsAllowed && !myIsSelected);
       myBtn.disabled = !myIsAllowed;
       myBtn.classList.toggle('my-active-preset', myIsSelected);
@@ -3282,6 +3410,68 @@
   }
 
   /**
+   * Clone client project duration map with values rounded to one decimal place.
+   * @param {Object} mySourceMap - Map of project name to duration seconds.
+   * @return {Object} Rounded project duration map.
+   */
+  function myRoundClientProjectMap_(mySourceMap) {
+    const myResult = {};
+    Object.keys(mySourceMap).forEach(function (myKey) {
+      myResult[myKey] = Number(mySourceMap[myKey].toFixed(1));
+    });
+    return myResult;
+  }
+
+  /**
+   * Sum numeric values inside a client project duration map.
+   * @param {Object} mySourceMap - Map of project name to duration seconds.
+   * @return {number} Total seconds across all entries.
+   */
+  function mySumClientProjectValues_(mySourceMap) {
+    let mySum = 0;
+    Object.keys(mySourceMap).forEach(function (myKey) {
+      mySum += mySourceMap[myKey] || 0;
+    });
+    return mySum;
+  }
+
+  /**
+   * Populate daily cumulative trigger quota totals and per-project maps on client buckets.
+   * @param {Array<Object>} mySeriesList - Sorted time-series buckets.
+   * @param {number} myQuotaLimitSec - Daily quota limit in seconds.
+   * @param {string} [mySeedDayKey] - Calendar day key (YYYY-MM-DD) eligible for pre-window seed.
+   * @param {Object} [mySeedByProject] - Pre-window trigger durations collected before myFromIso.
+   */
+  function myAppendClientCumulativeQuota_(mySeriesList, myQuotaLimitSec, mySeedDayKey, mySeedByProject) {
+    let myCurrentDay = '';
+    let myRunningTotal = 0;
+    let myRunningByProject = {};
+
+    mySeriesList.forEach(function (myItem) {
+      const myDay = (myItem.bucketKey || '').slice(0, 10);
+      if (myDay !== myCurrentDay) {
+        myCurrentDay = myDay;
+        myRunningByProject = (mySeedDayKey && myDay === mySeedDayKey && mySeedByProject)
+          ? Object.assign({}, mySeedByProject)
+          : {};
+        myRunningTotal = mySumClientProjectValues_(myRunningByProject);
+      }
+      myRunningTotal += myItem.triggerSec || 0;
+
+      const myProjMap = myItem.byProject || {};
+      Object.keys(myProjMap).forEach(function (myProjName) {
+        myRunningByProject[myProjName] = (myRunningByProject[myProjName] || 0) + myProjMap[myProjName];
+      });
+
+      myItem.cumulativeTriggerSec = Number(myRunningTotal.toFixed(1));
+      myItem.cumulativePercentUsed = myQuotaLimitSec > 0
+        ? Number(((myRunningTotal / myQuotaLimitSec) * 100).toFixed(1))
+        : 0;
+      myItem.byProjectCumulative = myRoundClientProjectMap_(myRunningByProject);
+    });
+  }
+
+  /**
    * In-memory aggregation engine running in browser RAM.
    * @param {Array<Object>} myProcesses - Cached processes.
    * @param {string} myFromIso - Start ISO.
@@ -3297,14 +3487,18 @@
     let myLastFullDayQuotaSec = 0;
 
     const myPad = function (n) { return n < 10 ? '0' + n : '' + n; };
-    const myYesterday = new Date(Date.now() - 86400000);
-    const myLastFullDayKey = myYesterday.getFullYear() + '-' + myPad(myYesterday.getMonth() + 1) + '-' + myPad(myYesterday.getDate());
+    const myToYmd = function (myD) {
+      return myD.getFullYear() + '-' + myPad(myD.getMonth() + 1) + '-' + myPad(myD.getDate());
+    };
+    const myLastFullDayKey = myToYmd(new Date(Date.now() - 86400000));
 
     const mySpec = myResolveClientAggregationSpec_(myFromIso, myToIso, myRequestedResolution);
     const myEffectiveResolution = mySpec.label;
 
     const myFromMs = myFromIso ? new Date(myFromIso).getTime() : 0;
     const myToMs = myToIso ? new Date(myToIso).getTime() : Infinity;
+    const myFirstDayKey = (myFromIso && !isNaN(myFromMs)) ? myToYmd(new Date(myFromMs)) : '';
+    const mySeedByProject = {};
 
     myPrefillClientSeriesBuckets_(mySeriesBuckets, mySpec);
 
@@ -3314,10 +3508,13 @@
       const myIsFail = myRow.processStatus === 'FAILED' || myRow.processStatus === 'TIMED_OUT';
       const myIsQuotaType = myRow.processType === 'TIME_DRIVEN' || myRow.processType === 'TRIGGER';
 
-      const myRowDate = new Date(myRow.startTime);
-      const myRowDay = myRowDate.getFullYear() + '-' + myPad(myRowDate.getMonth() + 1) + '-' + myPad(myRowDate.getDate());
+      const myRowDay = myToYmd(new Date(myRow.startTime));
       if (myRowDay === myLastFullDayKey && myIsQuotaType) {
         myLastFullDayQuotaSec += myRow.durationSec;
+      }
+
+      if (myFirstDayKey && myRowDay === myFirstDayKey && myRowTimeMs < myFromMs && myIsQuotaType && myRow.durationSec > 0) {
+        mySeedByProject[myRow.projectName] = (mySeedByProject[myRow.projectName] || 0) + myRow.durationSec;
       }
 
       if (myRowTimeMs < myFromMs || myRowTimeMs > myToMs) return;
@@ -3422,6 +3619,7 @@
         byProjectMaxFn: myItem.byProjectMaxFn
       };
     });
+    myAppendClientCumulativeQuota_(mySeriesList, myQuotaLimitSec, myFirstDayKey, mySeedByProject);
 
     const myLastFullDayQuotaPercent = Number(((myLastFullDayQuotaSec / myQuotaLimitSec) * 100).toFixed(1));
 
@@ -3487,7 +3685,8 @@
 
     const myChartTitle = document.getElementById('myChartSectionTitle');
     if (myChartTitle) {
-      myChartTitle.innerText = 'Miks zużycia kwoty wyzwalaczy per projekt (ziarnistość: ' + myAggregated.effectiveResolution + ')';
+      const myCumSuffix = myAggregated.effectiveResolution === '1d' ? '' : ' • narastająco 24h';
+      myChartTitle.innerText = 'Miks zużycia kwoty wyzwalaczy per projekt (ziarnistość: ' + myAggregated.effectiveResolution + myCumSuffix + ')';
     }
     const myPeakTitle = document.getElementById('myChartPeakDurationTitle');
     if (myPeakTitle) {

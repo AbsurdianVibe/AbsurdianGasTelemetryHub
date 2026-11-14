@@ -84,6 +84,68 @@ function myPrefillSeriesBuckets_(mySeriesBuckets, mySpec, myTimezone) {
 }
 
 /**
+ * Clone project duration map with values rounded to one decimal place.
+ * @param {Object} mySourceMap - Map of project name to duration seconds.
+ * @return {Object} Rounded project duration map.
+ */
+function myRoundProjectMap_(mySourceMap) {
+  const myResult = {};
+  Object.keys(mySourceMap).forEach(function (myKey) {
+    myResult[myKey] = Number(mySourceMap[myKey].toFixed(1));
+  });
+  return myResult;
+}
+
+/**
+ * Sum numeric values inside a project duration map.
+ * @param {Object} mySourceMap - Map of project name to duration seconds.
+ * @return {number} Total seconds across all entries.
+ */
+function mySumProjectValues_(mySourceMap) {
+  let mySum = 0;
+  Object.keys(mySourceMap).forEach(function (myKey) {
+    mySum += mySourceMap[myKey] || 0;
+  });
+  return mySum;
+}
+
+/**
+ * Populate daily cumulative trigger quota totals and per-project maps on sorted buckets.
+ * @param {Array<Object>} mySeriesList - Sorted time-series buckets.
+ * @param {number} myQuotaLimitSec - Daily quota limit in seconds.
+ * @param {string} [mySeedDayKey] - Calendar day key (YYYY-MM-DD) eligible for pre-window seed.
+ * @param {Object} [mySeedByProject] - Pre-window trigger durations collected before myFromIso.
+ */
+function myAppendCumulativeQuota_(mySeriesList, myQuotaLimitSec, mySeedDayKey, mySeedByProject) {
+  let myCurrentDay = '';
+  let myRunningTotal = 0;
+  let myRunningByProject = {};
+
+  mySeriesList.forEach(function (myItem) {
+    const myDay = (myItem.bucketKey || '').slice(0, 10);
+    if (myDay !== myCurrentDay) {
+      myCurrentDay = myDay;
+      myRunningByProject = (mySeedDayKey && myDay === mySeedDayKey && mySeedByProject)
+        ? Object.assign({}, mySeedByProject)
+        : {};
+      myRunningTotal = mySumProjectValues_(myRunningByProject);
+    }
+    myRunningTotal += myItem.triggerSec || 0;
+
+    const myProjMap = myItem.byProject || {};
+    Object.keys(myProjMap).forEach(function (myProjName) {
+      myRunningByProject[myProjName] = (myRunningByProject[myProjName] || 0) + myProjMap[myProjName];
+    });
+
+    myItem.cumulativeTriggerSec = Number(myRunningTotal.toFixed(1));
+    myItem.cumulativePercentUsed = myQuotaLimitSec > 0
+      ? Number(((myRunningTotal / myQuotaLimitSec) * 100).toFixed(1))
+      : 0;
+    myItem.byProjectCumulative = myRoundProjectMap_(myRunningByProject);
+  });
+}
+
+/**
  * Aggregate processes dataset into frontend DTO.
  * @param {Array<IProcessRow>} myRows - Raw process rows.
  * @param {number} myQuotaLimitSec - Quota limit in seconds.
@@ -91,9 +153,10 @@ function myPrefillSeriesBuckets_(mySeriesBuckets, mySpec, myTimezone) {
  * @param {string} [myFromIso] - Start ISO timestamp.
  * @param {string} [myToIso] - End ISO timestamp.
  * @param {string} [myRequestedResolution] - Target resolution (auto, max, 1d, 1h, 30m, 15m, 5m, 1m).
+ * @param {Object} [mySeedByProject] - Optional pre-window trigger quota map for first day start.
  * @return {Object} Aggregated dashboard DTO.
  */
-function myAggregateDataset(myRows, myQuotaLimitSec, myTz, myFromIso, myToIso, myRequestedResolution) {
+function myAggregateDataset(myRows, myQuotaLimitSec, myTz, myFromIso, myToIso, myRequestedResolution, mySeedByProject) {
   const myProjects = {};
   const mySeriesBuckets = {};
   let myTotalDurationSec = 0;
@@ -204,6 +267,8 @@ function myAggregateDataset(myRows, myQuotaLimitSec, myTz, myFromIso, myToIso, m
       byProjectMaxFn: myItem.byProjectMaxFn
     };
   });
+  const myFirstDayKey = myFromIso ? myGetDayKey(myFromIso, myTimezone) : '';
+  myAppendCumulativeQuota_(mySeriesList, myQuotaLimitSec, myFirstDayKey, mySeedByProject);
 
   const myLastFullDayQuotaPercent = Number(((myLastFullDayQuotaSec / myQuotaLimitSec) * 100).toFixed(1));
 

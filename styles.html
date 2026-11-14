@@ -113,14 +113,35 @@
     user-select: none;
   }
 
-  /* Buttons */
+  /* Buttons & Interactive Controls */
+  :is(.my-btn, .my-nav-btn, .my-pill-btn, .my-chart-option, .my-chart-range-badge) {
+    background: var(--my-ctl-bg);
+    color: var(--my-ctl-color);
+  }
+
+  :is(.my-btn, .my-nav-btn, .my-pill-btn, .my-chart-option, .my-chart-range-badge):hover:not(:disabled) {
+    background: var(--my-ctl-hover-bg);
+    color: var(--my-ctl-hover-color);
+    border-color: var(--my-ctl-hover-border);
+  }
+
+  :is(.my-btn, .my-nav-btn, .my-pill-btn):disabled {
+    opacity: 0.45;
+    cursor: default;
+    box-shadow: none;
+  }
+
   .my-btn {
+    --my-ctl-bg: var(--my-accent);
+    --my-ctl-color: #ffffff;
+    --my-ctl-border: var(--my-accent);
+    --my-ctl-hover-bg: var(--my-accent-hover);
+    --my-ctl-hover-color: #ffffff;
+    --my-ctl-hover-border: var(--my-accent-hover);
     display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: 8px;
-    background: var(--my-accent);
-    color: #ffffff;
     border: none;
     padding: 10px 18px;
     border-radius: var(--my-radius-md);
@@ -131,26 +152,18 @@
     box-shadow: 0 4px 14px var(--my-accent-glow);
   }
 
-  .my-btn:hover:not(:disabled) {
-    background: var(--my-accent-hover);
-  }
-
-  .my-btn:disabled {
-    opacity: 0.45;
-    cursor: default;
-    box-shadow: none;
+  :is(.my-btn-secondary, .my-pill-btn, .my-chart-option, .my-chart-range-badge) {
+    --my-ctl-bg: var(--my-bg-surface);
+    --my-ctl-color: var(--my-text-primary);
+    --my-ctl-border: var(--my-border);
+    --my-ctl-hover-bg: var(--my-bg-card-hover);
+    --my-ctl-hover-color: var(--my-text-primary);
+    --my-ctl-hover-border: var(--my-border-focus);
+    border: 1px solid var(--my-ctl-border);
   }
 
   .my-btn-secondary {
-    background: var(--my-bg-surface);
-    color: var(--my-text-primary);
-    border: 1px solid var(--my-border);
     box-shadow: none;
-  }
-
-  .my-btn-secondary:hover:not(:disabled) {
-    background: var(--my-bg-card-hover);
-    border-color: var(--my-border-focus);
   }
 
   /* Navigation Tabs */
@@ -163,9 +176,13 @@
   }
 
   .my-nav-btn {
-    background: transparent;
+    --my-ctl-bg: transparent;
+    --my-ctl-color: var(--my-text-secondary);
+    --my-ctl-border: transparent;
+    --my-ctl-hover-bg: var(--my-bg-surface);
+    --my-ctl-hover-color: var(--my-text-primary);
+    --my-ctl-hover-border: transparent;
     border: none;
-    color: var(--my-text-secondary);
     font-size: 14px;
     font-weight: 600;
     padding: 8px 16px;
@@ -174,14 +191,13 @@
     transition: all 0.2s ease;
   }
 
-  .my-nav-btn:hover {
-    color: var(--my-text-primary);
-    background: var(--my-bg-surface);
-  }
-
-  .my-nav-btn.my-active {
-    color: #ffffff;
-    background: var(--my-accent);
+  :is(.my-pill-btn.my-active-preset, .my-nav-btn.my-active) {
+    --my-ctl-bg: var(--my-accent);
+    --my-ctl-color: #ffffff;
+    --my-ctl-border: var(--my-accent);
+    --my-ctl-hover-bg: var(--my-accent-hover);
+    --my-ctl-hover-color: #ffffff;
+    --my-ctl-hover-border: var(--my-accent-hover);
   }
 
   /* KPI Cards Grid */
@@ -296,25 +312,17 @@
   }
 
   .my-chart-option {
+    --my-ctl-color: var(--my-text-secondary);
     display: inline-flex;
     align-items: center;
     gap: 8px;
     font-size: 12px;
     font-weight: 500;
-    color: var(--my-text-secondary);
-    background: var(--my-bg-surface);
-    border: 1px solid var(--my-border);
     padding: 5px 11px;
     border-radius: var(--my-radius-sm);
     cursor: pointer;
     user-select: none;
     transition: all 0.2s ease;
-  }
-
-  .my-chart-option:hover {
-    color: var(--my-text-primary);
-    border-color: var(--my-border-focus);
-    background: var(--my-bg-card-hover);
   }
 
   .my-chart-option input[type="checkbox"] {
@@ -373,9 +381,6 @@
   .my-chart-range-badge {
     position: absolute;
     transform: translateX(-50%);
-    background: var(--my-bg-surface);
-    border: 1px solid var(--my-border);
-    color: var(--my-text-primary);
     font-size: 11px;
     font-weight: 600;
     font-family: inherit;
@@ -392,13 +397,9 @@
     transition: all 0.2s ease;
   }
 
-  .my-chart-range-badge:hover {
-    color: var(--my-text-primary);
-    background: var(--my-bg-card-hover);
-    border-color: var(--my-border-focus);
-  }
-
   .my-chart-range-badge:active {
+    --my-ctl-hover-bg: var(--my-bg-surface);
+    --my-ctl-hover-border: var(--my-accent);
     background: var(--my-bg-surface);
     border-color: var(--my-accent);
   }
@@ -710,25 +711,23 @@
   }
 
   .my-btn-link-window {
+    --my-ctl-color: var(--my-text-secondary);
     padding: 7px 9px;
     font-size: 13px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     border-radius: var(--my-radius-sm);
-    color: var(--my-text-secondary);
     transition: all 0.2s ease;
   }
 
-  .my-btn-link-window:hover {
-    color: var(--my-text-primary);
-    border-color: var(--my-border-focus);
-  }
-
   .my-btn-link-window.my-active {
-    color: var(--my-accent);
-    background: hsla(217, 91%, 60%, 0.15);
-    border-color: var(--my-accent);
+    --my-ctl-bg: hsla(217, 91%, 60%, 0.15);
+    --my-ctl-color: var(--my-accent);
+    --my-ctl-border: var(--my-accent);
+    --my-ctl-hover-bg: var(--my-accent-glow);
+    --my-ctl-hover-color: var(--my-accent-hover);
+    --my-ctl-hover-border: var(--my-accent-hover);
     box-shadow: 0 0 8px var(--my-accent-glow);
   }
 
@@ -741,9 +740,7 @@
   }
 
   .my-pill-btn {
-    background: var(--my-bg-surface);
-    border: 1px solid var(--my-border);
-    color: var(--my-text-secondary);
+    --my-ctl-color: var(--my-text-secondary);
     font-size: 12px;
     font-weight: 600;
     padding: 6px 12px;
@@ -752,27 +749,7 @@
     transition: all 0.2s ease;
   }
 
-  .my-pill-btn:hover:not(:disabled) {
-    color: var(--my-text-primary);
-    background: var(--my-bg-card-hover);
-    border-color: var(--my-border-focus);
-  }
-
   .my-pill-btn.my-res-hidden {
     display: none;
-  }
-
-  .my-pill-btn.my-active-preset {
-    color: #ffffff;
-    background: var(--my-accent);
-    border-color: var(--my-accent);
-  }
-
-  .my-pill-btn.my-active-preset:disabled {
-    color: hsla(210, 40%, 98%, 0.52);
-    background: hsla(217, 91%, 60%, 0.28);
-    border-color: transparent;
-    box-shadow: none;
-    cursor: default;
   }
 </style>
