@@ -1,5 +1,13 @@
 /**
- * System configuration, enums and global constants.
+ * System configuration, API endpoints, retention limits, and domain enums.
+ *
+ * Centralizes all fixed constants for the backend: Google Apps Script Processes API URLs,
+ * externally monitored script IDs, pagination caps, sync cursor overlap (5 minutes), default
+ * Consumer quota limits (5400s / 90 min), retention bounds (7-180 days), Script Properties
+ * keys, and the column schema for the `raw_processes` Google Sheet.
+ *
+ * Must load before other backend scripts via `filePushOrder` in `.clasp.json` because
+ * top-level `const` bindings are evaluated in push order in the GAS V8 runtime.
  */
 
 const MY_PROCESSES_ENDPOINT = 'https://script.googleapis.com/v1/processes';

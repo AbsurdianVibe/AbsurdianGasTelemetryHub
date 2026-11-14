@@ -1,5 +1,11 @@
 /**
- * Client for Google Apps Script Processes API.
+ * HTTP client for the Google Apps Script Processes API.
+ *
+ * Fetches paginated execution logs using the script owner's OAuth token from both the general
+ * user-processes endpoint and the per-script endpoint for externally monitored projects.
+ * Normalizes raw Google API payloads into uniform domain records with a composite
+ * deduplication key (`projectName|functionName|processType|startTime`) and second-precision
+ * execution duration.
  *
  * @typedef {Object} IProcessRow
  * @property {string} key - Unique deduplication key.

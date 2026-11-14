@@ -1,0 +1,499 @@
+<script>
+  /**
+   * Chart.js X-axis calendar grid and harmonic tick-selection module.
+   *
+   * What happens in this file:
+   * - Parses timeline bucket keys to locate exact day, month, and year transitions across the plot.
+   * - Draws vertical calendar separator lines and axis tick stubs directly onto the chart canvas,
+   *   even when Chart.js skips those boundaries as text ticks (suppressing crowded sub-daily lines).
+   * - Runs a priority-anchor and harmonic time-ladder selection pass that guarantees at least 70px
+   *   between visible labels, falling back to uniform stride spacing on dense windows.
+   * - Formats X-axis labels in compact delta form so dates and years appear only on transitions.
+   */
+
+  const MY_DAILY_KEY_LENGTH = 10;
+  const MY_MIN_TICK_GAP_PX = 70;
+  const MY_MIN_DAY_BOUNDARY_GAP_PX = 24;
+  const MY_BOUNDARY_TICK_STUB_PX = 5;
+  const MY_TICK_FONT_SIZE_PX = 11;
+  const MY_TICK_FONT_WEIGHT_BOLD = '700';
+  const MY_TICK_FONT_WEIGHT_NORMAL = '400';
+  const MY_HARMONIC_SUBDAILY_STEPS_MIN = Object.freeze([720, 360, 180, 60, 30, 15, 5, 1]);
+  const MY_HARMONIC_DAILY_DAY_STRIDES = Object.freeze([10, 5, 3, 2, 1]);
+  const MY_TICK_TRANSITION = Object.freeze({
+    NONE: 'none',
+    DAY: 'day',
+    MONTH: 'month',
+    YEAR: 'year'
+  });
+  const MY_ANCHOR_PRIORITY = Object.freeze({
+    [MY_TICK_TRANSITION.YEAR]: 1,
+    [MY_TICK_TRANSITION.MONTH]: 2,
+    [MY_TICK_TRANSITION.DAY]: 3
+  });
+  const MY_CHANGE_TRANSITIONS = Object.freeze({
+    [MY_TICK_TRANSITION.MONTH]: true,
+    [MY_TICK_TRANSITION.YEAR]: true
+  });
+  const MY_X_GRID_STYLES = Object.freeze({
+    [MY_TICK_TRANSITION.NONE]: Object.freeze({
+      color: 'hsla(217, 33%, 30%, 0.2)',
+      tickColor: 'hsla(217, 33%, 30%, 0.2)',
+      lineWidth: 1
+    }),
+    [MY_TICK_TRANSITION.DAY]: Object.freeze({
+      color: 'hsla(217, 33%, 42%, 0.36)',
+      tickColor: 'hsla(215, 25%, 55%, 0.55)',
+      lineWidth: 1
+    }),
+    [MY_TICK_TRANSITION.MONTH]: Object.freeze({
+      color: 'hsla(215, 35%, 56%, 0.6)',
+      tickColor: 'hsla(213, 30%, 82%, 0.85)',
+      lineWidth: 1.5
+    }),
+    [MY_TICK_TRANSITION.YEAR]: Object.freeze({
+      color: 'hsla(213, 45%, 72%, 0.85)',
+      tickColor: 'hsla(210, 40%, 98%, 0.95)',
+      lineWidth: 2
+    })
+  });
+  const MY_MONTH_SHORT_NAMES = Object.freeze([
+    'sty', 'lut', 'mar', 'kwi', 'maj', 'cze',
+    'lip', 'sie', 'wrz', 'paź', 'lis', 'gru'
+  ]);
+  const MY_TICK_TEMPLATE_DAILY_FIRST = '00 maj 0000';
+  const MY_TICK_TEMPLATE_DAILY_REST = '00 maj';
+  const MY_TICK_TEMPLATE_SUBDAILY_FIRST = Object.freeze(['00:00', '00 maj 0000']);
+  const MY_TICK_TEMPLATE_SUBDAILY_REST = Object.freeze(['00:00', '00 maj']);
+
+  /**
+   * Split bucket key string into calendar and time parts.
+   * @param {string} myBucketKey - Raw bucket key string.
+   * @return {Object|null} Parsed parts or null.
+   */
+  function myParseBucketParts_(myBucketKey) {
+    if (!myBucketKey || typeof myBucketKey !== 'string') return null;
+    const myYmd = myBucketKey.slice(0, MY_DAILY_KEY_LENGTH);
+    const myIsDaily = myBucketKey.length <= MY_DAILY_KEY_LENGTH;
+    const myYear = myYmd.slice(0, 4);
+    const myMonthStr = myYmd.slice(5, 7);
+    const myDayStr = myYmd.slice(8, 10);
+    const myTime = myIsDaily ? '' : myBucketKey.slice(MY_DAILY_KEY_LENGTH + 1);
+    const myDayMonth = myDayStr + ' ' + (MY_MONTH_SHORT_NAMES[Number(myMonthStr) - 1] || myMonthStr);
+    const myMinuteOfDay = myIsDaily ? -1 : (Number(myTime.slice(0, 2)) * 60 + Number(myTime.slice(3, 5)));
+    return {
+      year: myYear,
+      yearMonth: myYmd.slice(0, 7),
+      dayMonth: myDayMonth,
+      fullDate: myDayMonth + ' ' + myYear,
+      ymd: myYmd,
+      day: Number(myDayStr),
+      time: myTime,
+      minuteOfDay: myMinuteOfDay,
+      isDaily: myIsDaily
+    };
+  }
+
+  /**
+   * Determine calendar boundary transition level from previous tick.
+   * @param {Object} myCurrParts - Current tick date parts.
+   * @param {Object|null} myPrevParts - Previous tick date parts.
+   * @return {string} Transition tier key from MY_TICK_TRANSITION.
+   */
+  function myGetTickTransitionLevel_(myCurrParts, myPrevParts) {
+    if (!myPrevParts) return MY_TICK_TRANSITION.NONE;
+    if (myCurrParts.year !== myPrevParts.year) return MY_TICK_TRANSITION.YEAR;
+    if (myCurrParts.yearMonth !== myPrevParts.yearMonth) return MY_TICK_TRANSITION.MONTH;
+    if (myCurrParts.ymd !== myPrevParts.ymd) return MY_TICK_TRANSITION.DAY;
+    return MY_TICK_TRANSITION.NONE;
+  }
+
+  /**
+   * Get X-axis grid style matching visible tick calendar transition level.
+   * @param {Object} myCtx - Chart.js scriptable scale context.
+   * @return {Object} Grid style with color, tickColor and lineWidth.
+   */
+  function myGetXGridStyle_(myCtx) {
+    const myTransition = myCtx && myCtx.tick && myCtx.tick.myGridTransition;
+    return (myTransition && MY_X_GRID_STYLES[myTransition]) || MY_X_GRID_STYLES[MY_TICK_TRANSITION.NONE];
+  }
+
+  /**
+   * Collect exact calendar transitions and parsed parts across raw bucket labels.
+   * @param {Array<string>} myLabels - Full bucket label keys.
+   * @return {Object} Transitions, boundary entries, parsed parts and daily flag.
+   */
+  function myCollectCalendarBoundaries_(myLabels) {
+    const myTransitions = [];
+    const myBoundaries = [];
+    const myPartsList = [];
+    let myPrevParts = null;
+    let myIsDaily = false;
+    for (let myIdx = 0; myIdx < myLabels.length; myIdx++) {
+      const myCurrParts = myParseBucketParts_(myLabels[myIdx]);
+      myPartsList.push(myCurrParts);
+      if (!myCurrParts) {
+        myTransitions.push(MY_TICK_TRANSITION.NONE);
+        continue;
+      }
+      if (!myPrevParts) myIsDaily = myCurrParts.isDaily;
+      const myTransition = myGetTickTransitionLevel_(myCurrParts, myPrevParts);
+      myTransitions.push(myTransition);
+      if (myTransition !== MY_TICK_TRANSITION.NONE) {
+        myBoundaries.push({ index: myIdx, transition: myTransition });
+      }
+      myPrevParts = myCurrParts;
+    }
+    return {
+      transitions: myTransitions,
+      boundaries: myBoundaries,
+      partsList: myPartsList,
+      isDaily: myIsDaily
+    };
+  }
+
+  /**
+   * Build map of bucket indices currently rendered as visible X-axis ticks.
+   * @param {Object} myXScale - Chart.js X scale instance.
+   * @return {Object} Lookup map of visible tick bucket indices.
+   */
+  function myGetVisibleTickIndexMap_(myXScale) {
+    const myVisibleMap = {};
+    if (!myXScale || !myXScale.ticks) return myVisibleMap;
+    myXScale.ticks.forEach(function (myTick) {
+      myVisibleMap[myTick.value] = true;
+    });
+    return myVisibleMap;
+  }
+
+  /**
+   * Check whether skipped sub-daily day boundaries have enough pixel spacing.
+   * @param {Object} myCalendarData - Precomputed calendar boundaries metadata.
+   * @param {number} myAreaWidthPx - Chart plot area width in pixels.
+   * @return {boolean} True when skipped day lines can render without clutter.
+   */
+  function myShouldDrawSkippedDays_(myCalendarData, myAreaWidthPx) {
+    if (myCalendarData.isDaily || !myCalendarData.boundaries.length) return false;
+    return (myAreaWidthPx / myCalendarData.boundaries.length) >= MY_MIN_DAY_BOUNDARY_GAP_PX;
+  }
+
+  /**
+   * Stroke one vertical calendar boundary line and axis tick stub.
+   * @param {CanvasRenderingContext2D} myCtx - Canvas 2D context.
+   * @param {Object} myArea - Chart.js plot area bounds.
+   * @param {number} myRawX - Unaligned X pixel coordinate.
+   * @param {string} myTransition - Transition tier key.
+   */
+  function myStrokeCalendarBoundaryLine_(myCtx, myArea, myRawX, myTransition) {
+    if (myRawX <= myArea.left || myRawX >= myArea.right) return;
+    const myStyle = MY_X_GRID_STYLES[myTransition];
+    const myX = (myStyle.lineWidth === 1) ? (Math.round(myRawX) + 0.5) : myRawX;
+
+    myCtx.lineWidth = myStyle.lineWidth;
+    myCtx.setLineDash([]);
+    myCtx.strokeStyle = myStyle.color;
+    myCtx.beginPath();
+    myCtx.moveTo(myX, myArea.top);
+    myCtx.lineTo(myX, myArea.bottom);
+    myCtx.stroke();
+
+    myCtx.strokeStyle = myStyle.tickColor;
+    myCtx.beginPath();
+    myCtx.moveTo(myX, myArea.bottom);
+    myCtx.lineTo(myX, myArea.bottom + MY_BOUNDARY_TICK_STUB_PX);
+    myCtx.stroke();
+  }
+
+  /**
+   * Draw vertical calendar boundary lines skipped by visible tick selection.
+   * @param {Object} myChart - Chart.js instance.
+   * @param {Object} myCalendarData - Precomputed transitions and boundaries.
+   */
+  function myDrawSkippedBoundaryGrid_(myChart, myCalendarData) {
+    const myArea = myChart.chartArea;
+    const myXScale = myChart.scales && myChart.scales.x;
+    if (!myArea || !myXScale || !myCalendarData || !myCalendarData.boundaries.length) return;
+
+    const myVisibleTicks = myGetVisibleTickIndexMap_(myXScale);
+    const myShowSkippedDays = myShouldDrawSkippedDays_(myCalendarData, myArea.width);
+    const myCtx = myChart.ctx;
+    myCtx.save();
+    myCalendarData.boundaries.forEach(function (myBoundary) {
+      if (myVisibleTicks[myBoundary.index]) return;
+      if (myBoundary.transition === MY_TICK_TRANSITION.DAY && !myShowSkippedDays) return;
+      myStrokeCalendarBoundaryLine_(myCtx, myArea, myXScale.getPixelForValue(myBoundary.index), myBoundary.transition);
+    });
+    myCtx.restore();
+  }
+
+  /**
+   * Get short date text for tick based on change from previous visible tick.
+   * @param {Object} myCurrParts - Current tick date parts.
+   * @param {Object|null} myPrevParts - Previous visible tick date parts.
+   * @return {string} Date anchor string or empty string.
+   */
+  function myFormatCalendarAnchor_(myCurrParts, myPrevParts) {
+    if (!myPrevParts || myCurrParts.year !== myPrevParts.year) return myCurrParts.fullDate;
+    return myCurrParts.ymd !== myPrevParts.ymd ? myCurrParts.dayMonth : '';
+  }
+
+  /**
+   * Build final 1-line or 2-line label for one visible tick.
+   * @param {Object} myCurrParts - Current tick date parts.
+   * @param {Object|null} myPrevParts - Previous visible tick date parts.
+   * @return {string|Array<string>} Formatted tick label.
+   */
+  function myFormatSingleVisibleTick_(myCurrParts, myPrevParts) {
+    const myAnchor = myFormatCalendarAnchor_(myCurrParts, myPrevParts);
+    if (myCurrParts.isDaily) return myAnchor || myCurrParts.dayMonth;
+    return myAnchor ? [myCurrParts.time, myAnchor] : myCurrParts.time;
+  }
+
+  /**
+   * Sort unique numeric indices in ascending order.
+   * @param {Array<number>} myIndices - Bucket indices list.
+   * @return {Array<number>} Sorted unique bucket indices.
+   */
+  function mySortUniqueIndicesAsc_(myIndices) {
+    return Array.from(new Set(myIndices)).sort(function (myA, myB) {
+      return myA - myB;
+    });
+  }
+
+  /**
+   * Filter and sort boundary entries by visual anchor priority.
+   * @param {Array<Object>} myBoundaries - Raw calendar boundaries.
+   * @param {boolean} myIsDaily - True when resolution is daily.
+   * @return {Array<Object>} Sorted boundary entries.
+   */
+  function myGetSortedAnchorCandidates_(myBoundaries, myIsDaily) {
+    return myBoundaries
+      .filter(function (myEntry) {
+        return !myIsDaily || myEntry.transition !== MY_TICK_TRANSITION.DAY;
+      })
+      .sort(function (myA, myB) {
+        return (MY_ANCHOR_PRIORITY[myA.transition] - MY_ANCHOR_PRIORITY[myB.transition]) || (myA.index - myB.index);
+      });
+  }
+
+  /**
+   * Check if candidate index keeps minimum pixel gap from existing ticks.
+   * @param {number} myCandidateIdx - Candidate bucket index.
+   * @param {Array<number>} myExistingIndices - Accepted bucket indices.
+   * @param {Object} myXScale - Chart.js X scale instance.
+   * @return {boolean} True when candidate keeps MY_MIN_TICK_GAP_PX.
+   */
+  function myHasPixelClearance_(myCandidateIdx, myExistingIndices, myXScale) {
+    const myCandidatePx = myXScale.getPixelForValue(myCandidateIdx);
+    for (let myI = 0; myI < myExistingIndices.length; myI++) {
+      if (Math.abs(myCandidatePx - myXScale.getPixelForValue(myExistingIndices[myI])) < MY_MIN_TICK_GAP_PX) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Check if all adjacent tick indices satisfy minimum pixel gap.
+   * @param {Array<number>} mySortedIndices - Sorted bucket indices.
+   * @param {Object} myXScale - Chart.js X scale instance.
+   * @return {boolean} True when all neighbors clear MY_MIN_TICK_GAP_PX.
+   */
+  function myHasAllNeighborClearance_(mySortedIndices, myXScale) {
+    for (let myI = 1; myI < mySortedIndices.length; myI++) {
+      if (Math.abs(myXScale.getPixelForValue(mySortedIndices[myI]) - myXScale.getPixelForValue(mySortedIndices[myI - 1])) < MY_MIN_TICK_GAP_PX) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Select non-colliding priority anchor indices starting from index zero.
+   * @param {Object} myCalendarData - Precomputed boundaries metadata.
+   * @param {Object} myXScale - Chart.js X scale instance.
+   * @return {Array<number>} Sorted priority anchor indices.
+   */
+  function mySelectPriorityAnchors_(myCalendarData, myXScale) {
+    const myAnchors = [0];
+    const myCandidates = myGetSortedAnchorCandidates_(myCalendarData.boundaries, myCalendarData.isDaily);
+    for (let myI = 0; myI < myCandidates.length; myI++) {
+      const myCandidateIdx = myCandidates[myI].index;
+      if (myHasPixelClearance_(myCandidateIdx, myAnchors, myXScale)) {
+        myAnchors.push(myCandidateIdx);
+      }
+    }
+    return mySortUniqueIndicesAsc_(myAnchors);
+  }
+
+  /**
+   * Test whether bucket parts match a harmonic ladder step.
+   * @param {Object|null} myParts - Parsed bucket parts.
+   * @param {number} myStep - Minute step or day stride.
+   * @param {boolean} myIsDaily - True when resolution is daily.
+   * @return {boolean} True when bucket fits on the rung.
+   */
+  function myMatchesHarmonicRung_(myParts, myStep, myIsDaily) {
+    if (!myParts) return false;
+    if (myIsDaily) return (myParts.day - 1) % myStep === 0;
+    return myParts.minuteOfDay % myStep === 0;
+  }
+
+  /**
+   * Test whether bucket index fits harmonic rung and clears anchors.
+   * @param {Array<Object|null>} myPartsList - Parsed parts aligned with labels.
+   * @param {number} myIdx - Bucket index to check.
+   * @param {Array<number>} myAnchors - Priority anchor indices.
+   * @param {number} myStep - Harmonic step or day stride.
+   * @param {boolean} myIsDaily - True when resolution is daily.
+   * @param {Object} myXScale - Chart.js X scale instance.
+   * @return {boolean} True when bucket should join rung candidates.
+   */
+  function myIsEligibleRungIndex_(myPartsList, myIdx, myAnchors, myStep, myIsDaily, myXScale) {
+    if (!myMatchesHarmonicRung_(myPartsList[myIdx], myStep, myIsDaily)) return false;
+    return myHasPixelClearance_(myIdx, myAnchors, myXScale);
+  }
+
+  /**
+   * Collect harmonic rung candidates combined with priority anchors.
+   * @param {Array<Object|null>} myPartsList - Parsed parts aligned with labels.
+   * @param {Array<number>} myAnchors - Priority anchor indices.
+   * @param {number} myStep - Harmonic step or day stride.
+   * @param {boolean} myIsDaily - True when resolution is daily.
+   * @param {Object} myXScale - Chart.js X scale instance.
+   * @return {Array<number>} Sorted unique indices for this rung.
+   */
+  function myCollectRungCandidates_(myPartsList, myAnchors, myStep, myIsDaily, myXScale) {
+    const myCandidate = myAnchors.slice();
+    for (let myIdx = 0; myIdx < myPartsList.length; myIdx++) {
+      if (myIsEligibleRungIndex_(myPartsList, myIdx, myAnchors, myStep, myIsDaily, myXScale)) {
+        myCandidate.push(myIdx);
+      }
+    }
+    return mySortUniqueIndicesAsc_(myCandidate);
+  }
+
+  /**
+   * Get ordered harmonic ladder rungs for current chart resolution.
+   * @param {boolean} myIsDaily - True when resolution is daily.
+   * @return {Array<number>} Descending array of harmonic steps.
+   */
+  function myGetHarmonicRungs_(myIsDaily) {
+    return myIsDaily ? MY_HARMONIC_DAILY_DAY_STRIDES : MY_HARMONIC_SUBDAILY_STEPS_MIN;
+  }
+
+  /**
+   * Climb harmonic rungs until adjacent ticks violate MY_MIN_TICK_GAP_PX.
+   * @param {Array<number>} myAnchors - Priority anchor indices.
+   * @param {Object} myCalendarData - Precomputed boundaries and parts.
+   * @param {Object} myXScale - Chart.js X scale instance.
+   * @return {Array<number>} Best non-overlapping harmonic tick indices.
+   */
+  function myRefineWithHarmonicLadder_(myAnchors, myCalendarData, myXScale) {
+    const myRungs = myGetHarmonicRungs_(myCalendarData.isDaily);
+    let myAccepted = myAnchors;
+    for (let myI = 0; myI < myRungs.length; myI++) {
+      const myCandidate = myCollectRungCandidates_(
+        myCalendarData.partsList,
+        myAnchors,
+        myRungs[myI],
+        myCalendarData.isDaily,
+        myXScale
+      );
+      if (!myHasAllNeighborClearance_(myCandidate, myXScale)) break;
+      myAccepted = myCandidate;
+    }
+    return myAccepted;
+  }
+
+  /**
+   * Collect evenly spaced bucket indices by fixed index stride.
+   * @param {Array<number>} myBaseIndices - Initial accepted indices.
+   * @param {number} myLabelsCount - Total number of buckets.
+   * @param {number} myStepIdx - Bucket index stride.
+   * @param {Object} myXScale - Chart.js X scale instance.
+   * @return {Array<number>} Sorted unique indices with uniform additions.
+   */
+  function myCollectUniformIndices_(myBaseIndices, myLabelsCount, myStepIdx, myXScale) {
+    const myResult = myBaseIndices.slice();
+    for (let myIdx = myStepIdx; myIdx < myLabelsCount; myIdx += myStepIdx) {
+      if (myHasPixelClearance_(myIdx, myResult, myXScale)) {
+        myResult.push(myIdx);
+      }
+    }
+    return mySortUniqueIndicesAsc_(myResult);
+  }
+
+  /**
+   * Fill axis uniformly when harmonic ladder leaves at most one tick.
+   * @param {Array<number>} myIndices - Indices from harmonic ladder.
+   * @param {number} myLabelsCount - Total number of buckets.
+   * @param {Object} myXScale - Chart.js X scale instance.
+   * @return {Array<number>} Selected or uniformly filled indices.
+   */
+  function myApplyFallbackUniformTicks_(myIndices, myLabelsCount, myXScale) {
+    if (myIndices.length > 1) return myIndices;
+    const mySpanPx = Math.abs(myXScale.getPixelForValue(myLabelsCount - 1) - myXScale.getPixelForValue(0));
+    if (mySpanPx < MY_MIN_TICK_GAP_PX) return myIndices;
+    return myCollectUniformIndices_(
+      myIndices,
+      myLabelsCount,
+      Math.max(1, Math.ceil((myLabelsCount - 1) / Math.floor(mySpanPx / MY_MIN_TICK_GAP_PX))),
+      myXScale
+    );
+  }
+
+  /**
+   * Build one Chart.js tick object from current and previous parts.
+   * @param {number} myIdx - Bucket index.
+   * @param {Object} myCurrParts - Current bucket date parts.
+   * @param {Object|null} myPrevParts - Previous visible tick date parts.
+   * @param {Array<string>} myTransitions - Exact calendar transitions.
+   * @return {Object} Chart.js tick descriptor.
+   */
+  function myCreateTickDescriptor_(myIdx, myCurrParts, myPrevParts, myTransitions) {
+    return {
+      value: myIdx,
+      major: false,
+      label: myFormatSingleVisibleTick_(myCurrParts, myPrevParts),
+      myIsChange: Boolean(MY_CHANGE_TRANSITIONS[myGetTickTransitionLevel_(myCurrParts, myPrevParts)]),
+      myGridTransition: myPrevParts ? myTransitions[myIdx] : MY_TICK_TRANSITION.NONE
+    };
+  }
+
+  /**
+   * Build sorted Chart.js tick descriptors with delta labels and styles.
+   * @param {Array<number>} myIndices - Selected bucket indices.
+   * @param {Object} myCalendarData - Precomputed transitions and parts.
+   * @return {Array<Object>} Formatted Chart.js tick array.
+   */
+  function myBuildVisibleTickObjects_(myIndices, myCalendarData) {
+    const myTicks = [];
+    let myPrevParts = null;
+    for (let myI = 0; myI < myIndices.length; myI++) {
+      const myCurrParts = myCalendarData.partsList[myIndices[myI]];
+      if (!myCurrParts) continue;
+      myTicks.push(myCreateTickDescriptor_(myIndices[myI], myCurrParts, myPrevParts, myCalendarData.transitions));
+      myPrevParts = myCurrParts;
+    }
+    return myTicks;
+  }
+
+  /**
+   * Align X-axis ticks to calendar boundaries and harmonic sub-ticks.
+   * @param {Object} myScale - Chart.js scale instance.
+   * @param {Array<string>} myLabels - Full bucket label keys.
+   * @param {Object} myCalendarData - Precomputed boundaries, transitions and parts.
+   */
+  function myApplyPostSkipDeltaTicks_(myScale, myLabels, myCalendarData) {
+    if (!myScale || !myLabels.length || !myCalendarData) return;
+    myScale.ticks = myBuildVisibleTickObjects_(
+      myApplyFallbackUniformTicks_(
+        myRefineWithHarmonicLadder_(mySelectPriorityAnchors_(myCalendarData, myScale), myCalendarData, myScale),
+        myLabels.length,
+        myScale
+      ),
+      myCalendarData
+    );
+  }
+</script>

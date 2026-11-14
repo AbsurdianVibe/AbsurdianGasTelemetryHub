@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <?!= myInclude('styles'); ?>
+  <?!= myInclude('frontend/styles'); ?>
 </head>
 
 <body tabindex="-1">
@@ -255,7 +255,15 @@
     <div class="my-loading-text" id="myDashboardLoadingText">Inicjalizacja i pobieranie bazy procesów...</div>
   </div>
 
-  <?!= myInclude('app.js'); ?>
+  <?!= myInclude('frontend/js/state.js'); ?>
+  <?!= myInclude('frontend/js/aggregationEngine.js'); ?>
+  <?!= myInclude('frontend/js/chartScaleTicks.js'); ?>
+  <?!= myInclude('frontend/js/chartSelection.js'); ?>
+  <?!= myInclude('frontend/js/chartRenderer.js'); ?>
+  <?!= myInclude('frontend/js/datetimeInput.js'); ?>
+  <?!= myInclude('frontend/js/timeWindowToolbar.js'); ?>
+  <?!= myInclude('frontend/js/viewsRenderer.js'); ?>
+  <?!= myInclude('frontend/js/appController.js'); ?>
 </body>
 
 </html>

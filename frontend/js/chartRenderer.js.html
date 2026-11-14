@@ -1,0 +1,898 @@
+<script>
+  /**
+   * Chart.js timeline factory, custom canvas plugins, tooltips, and pointer interaction controller.
+   *
+   * What happens in this file:
+   * - Builds and updates two charts: a stacked cumulative trigger quota area chart (with bucket
+   *   deltas and daily quota % tooltips) and an overlay peak duration line chart (bridging gaps).
+   * - Registers custom canvas layers for calendar grid lines, a vertical hover crosshair, drag
+   *   selection overlay with handles, plot borders, and a cursor-following tooltip positioner.
+   * - Syncs clicked legend visibility across both charts into `localStorage`, toggles GAS quota
+   *   reference lines, and drives pointer drag/resize events on the chart canvas.
+   */
+
+  const MY_LIMIT_LINE_STYLE = Object.freeze({
+    borderColor: 'hsl(0, 75%, 60%)',
+    borderWidth: 2,
+    borderDash: [6, 6],
+    pointRadius: 0,
+    fill: false
+  });
+
+  /**
+   * Build limit reference line dataset.
+   * @param {number} myPointsCount - Number of data points.
+   * @param {number} myLimitValue - Limit value in seconds.
+   * @param {string} myToggleId - DOM checkbox toggle ID.
+   * @param {string} myLabel - Dataset label text.
+   * @return {Object} Chart.js dataset for limit line.
+   */
+  function myBuildLimitDataset_(myPointsCount, myLimitValue, myToggleId, myLabel) {
+    const myToggle = document.getElementById(myToggleId);
+    const myIsHidden = myToggle ? !myToggle.checked : false;
+    const myData = [];
+    for (let myI = 0; myI < myPointsCount; myI++) {
+      myData.push(myLimitValue);
+    }
+    return {
+      label: myLabel,
+      data: myData,
+      borderColor: MY_LIMIT_LINE_STYLE.borderColor,
+      borderWidth: MY_LIMIT_LINE_STYLE.borderWidth,
+      borderDash: MY_LIMIT_LINE_STYLE.borderDash,
+      pointRadius: MY_LIMIT_LINE_STYLE.pointRadius,
+      fill: false,
+      tension: 0,
+      stack: 'myLimitStack',
+      isLimitLine: true,
+      hidden: myIsHidden
+    };
+  }
+
+  /**
+   * Extract numeric time-series values array for a single project.
+   * @param {Array<Object>} myDailySeries - Time bucket series.
+   * @param {string} myProjName - Project identifier.
+   * @param {string} myFieldKey - Bucket map field name.
+   * @param {boolean} myNullWhenMissing - True to return null instead of 0 for gaps.
+   * @return {Array<number|null>} Values aligned with series buckets.
+   */
+  function myBuildSeriesValues_(myDailySeries, myProjName, myFieldKey, myNullWhenMissing) {
+    return myDailySeries.map(function (myDay) {
+      const myMap = myDay[myFieldKey];
+      if (!myMap || typeof myMap[myProjName] === 'undefined') {
+        return myNullWhenMissing ? null : 0;
+      }
+      return Number(myMap[myProjName].toFixed(1));
+    });
+  }
+
+  /**
+   * Resolve stacked area point radius prioritizing buckets with non-zero activity jumps.
+   * @param {Object} myCtx - Chart.js scriptable point context.
+   * @param {number} myLabelsCount - Total number of x-axis buckets.
+   * @param {Array<number>|undefined} myDeltaData - Per-bucket jump durations.
+   * @param {boolean} myIsHover - True when resolving hover radius.
+   * @return {number} Point radius in pixels.
+   */
+  function myGetStackedPointRadius_(myCtx, myLabelsCount, myDeltaData, myIsHover) {
+    if (!myCtx || typeof myCtx.dataIndex !== 'number') return 0;
+    if (myDeltaData) {
+      const myDelta = myDeltaData[myCtx.dataIndex] || 0;
+      if (myIsHover) return myDelta > 0 ? 5 : (myCtx.raw > 0 ? 3 : 0);
+      return myDelta > 0 ? (myLabelsCount > 50 ? 0 : 2.5) : 0;
+    }
+    if (!myCtx.raw || myCtx.raw <= 0) return 0;
+    return myIsHover ? 4 : (myLabelsCount > 50 ? 0 : 2);
+  }
+
+  /**
+   * Read current bucket delta duration for a tooltip context item.
+   * @param {Object} myCtxItem - Chart.js tooltip item.
+   * @return {number} Bucket delta seconds.
+   */
+  function myGetTooltipDeltaSec_(myCtxItem) {
+    const myDeltaArr = myCtxItem && myCtxItem.dataset && myCtxItem.dataset.deltaData;
+    return myDeltaArr ? (myDeltaArr[myCtxItem.dataIndex] || 0) : 0;
+  }
+
+  /**
+   * Format stacked tooltip project row with current jump and daily cumulative sum.
+   * @param {Object} myCtxItem - Chart.js tooltip item.
+   * @param {boolean} myIsDaily - True when X axis granularity is 1d.
+   * @return {string} Formatted tooltip line.
+   */
+  function myFormatStackedTooltipLabel_(myCtxItem, myIsDaily) {
+    if (myIsDaily) {
+      return ' ' + myFormatDurationFixed_(myCtxItem.raw) + ' - ' + myCtxItem.dataset.label;
+    }
+    const myDeltaSec = myGetTooltipDeltaSec_(myCtxItem);
+    return ' +' + myFormatDurationFixed_(myDeltaSec) + ' | Σ ' + myFormatDurationFixed_(myCtxItem.raw) + ' - ' + myCtxItem.dataset.label;
+  }
+
+  /**
+   * Format single-line stacked tooltip footer with bucket jump, daily total, and quota share.
+   * @param {Array<Object>} myTooltipItems - Visible tooltip items.
+   * @param {boolean} myIsDaily - True when X axis granularity is 1d.
+   * @param {number} myQuotaLimitSec - Daily GAS quota limit in seconds.
+   * @return {string} Single-line footer summary.
+   */
+  function myFormatStackedTooltipFooter_(myTooltipItems, myIsDaily, myQuotaLimitSec) {
+    if (!myTooltipItems || !myTooltipItems.length) return '';
+    let myCumTotalSec = 0;
+    let myDeltaTotalSec = 0;
+    myTooltipItems.forEach(function (myIt) {
+      if (!myIt || typeof myIt.raw !== 'number') return;
+      myCumTotalSec += myIt.raw;
+      myDeltaTotalSec += myGetTooltipDeltaSec_(myIt);
+    });
+    if (myCumTotalSec <= 0) return '';
+    const myPctStr = myQuotaLimitSec > 0 ? ' (' + ((myCumTotalSec / myQuotaLimitSec) * 100).toFixed(1) + '%)' : '';
+    if (myIsDaily) {
+      return myFormatDurationFixed_(myCumTotalSec) + ' - Suma doby' + myPctStr;
+    }
+    return '+' + myFormatDurationFixed_(myDeltaTotalSec) + ' skok | Σ ' + myFormatDurationFixed_(myCumTotalSec) + ' doba' + myPctStr;
+  }
+
+  /**
+   * Render time-series chart for project metrics (stacked area or overlay multi-line).
+   * @param {string} myCanvasId - Canvas element ID.
+   * @param {Object|null} myExistingInstance - Existing Chart.js instance.
+   * @param {Array<Object>} myDailySeries - Time bucket series.
+   * @param {string} myProjectFieldKey - Field in bucket holding project map.
+   * @param {string} [myChartMode] - STACKED or OVERLAY mode.
+   * @param {Object} [myLimitOptions] - Limit line and cumulative options.
+   * @return {Object|null} New Chart.js instance.
+   */
+  function myRenderTimeSeriesChart_(myCanvasId, myExistingInstance, myDailySeries, myProjectFieldKey, myChartMode, myLimitOptions) {
+    const myCanvas = document.getElementById(myCanvasId);
+    if (!myCanvas) return null;
+    const myCtx = myCanvas.getContext('2d');
+
+    if (myExistingInstance) {
+      if (myExistingInstance._myDragSelection) {
+        myExistingInstance._myDragSelection = null;
+      }
+      myExistingInstance.destroy();
+    }
+    myRemoveChartRangeBadgeButtons_();
+
+    const myIsOverlay = myChartMode === MY_CHART_MODE.OVERLAY;
+    const myLabels = myDailySeries.map(function (d) { return d.dayKey || d.bucketKey; });
+    const myCalendarData = myCollectCalendarBoundaries_(myLabels);
+    const myIsCumulativeDaily = Boolean(!myIsOverlay && myLimitOptions && myLimitOptions.isCumulativeDaily);
+    const myDeltaFieldKey = myIsCumulativeDaily ? (myLimitOptions.deltaFieldKey || '') : '';
+    const myIsSubdailyCumulative = myIsCumulativeDaily && !myCalendarData.isDaily;
+    const myQuotaLimitSec = (myLimitOptions && myLimitOptions.limitValue) || 0;
+
+    const myProjectNames = [];
+    myDailySeries.forEach(function (myDay) {
+      const myMap = myDay[myProjectFieldKey];
+      if (!myMap) return;
+      Object.keys(myMap).forEach(function (myP) {
+        if (myProjectNames.indexOf(myP) === -1) {
+          myProjectNames.push(myP);
+        }
+      });
+    });
+    myProjectNames.sort();
+
+    const myOrderedProjects = myIsOverlay ? myProjectNames : myProjectNames.slice().reverse();
+
+    const myDatasets = myOrderedProjects.map(function (myProjName) {
+      const myColor = myGetProjectColor_(myProjName);
+      const myBridgeColor = myColor.border.replace('hsl(', 'hsla(').replace(')', ', 0.3)');
+      const myData = myBuildSeriesValues_(myDailySeries, myProjName, myProjectFieldKey, myIsOverlay);
+      const myDeltaData = myDeltaFieldKey ? myBuildSeriesValues_(myDailySeries, myProjName, myDeltaFieldKey, false) : undefined;
+
+      return {
+        label: myProjName,
+        data: myData,
+        deltaData: myDeltaData,
+        fnNames: myIsOverlay ? myDailySeries.map(function (myDay) {
+          return (myDay.byProjectMaxFn && myDay.byProjectMaxFn[myProjName]) || '';
+        }) : undefined,
+        borderColor: myColor.border,
+        backgroundColor: myIsOverlay ? 'transparent' : myColor.fill,
+        fill: !myIsOverlay,
+        stepped: false,
+        tension: myIsSubdailyCumulative ? 0 : 0.1,
+        borderWidth: 2,
+        pointRadius: myIsOverlay ? 1 : function (myPtCtx) {
+          return myGetStackedPointRadius_(myPtCtx, myLabels.length, myDeltaData, false);
+        },
+        pointHoverRadius: myIsOverlay ? undefined : function (myPtCtx) {
+          return myGetStackedPointRadius_(myPtCtx, myLabels.length, myDeltaData, true);
+        },
+        spanGaps: myIsOverlay,
+        segment: myIsOverlay ? {
+          borderColor: function (myCtx) {
+            const myIsBridge = Boolean(
+              (myCtx.p0 && myCtx.p0.skip) ||
+              (myCtx.p1 && myCtx.p1.skip) ||
+              (typeof myCtx.p0DataIndex === 'number' && typeof myCtx.p1DataIndex === 'number' && Math.abs(myCtx.p1DataIndex - myCtx.p0DataIndex) > 1)
+            );
+            return myIsBridge ? myBridgeColor : undefined;
+          }
+        } : {
+          borderColor: function (myCtx) {
+            const myVal0 = (typeof myCtx.p0DataIndex === 'number') ? myData[myCtx.p0DataIndex] : 0;
+            const myVal1 = (typeof myCtx.p1DataIndex === 'number') ? myData[myCtx.p1DataIndex] : 0;
+            const myIsZeroSegment = (myVal0 <= 0 && myVal1 <= 0);
+            return myIsZeroSegment ? 'transparent' : undefined;
+          }
+        },
+        stack: myIsOverlay ? undefined : 'myProjectStack',
+        hidden: !!myHiddenProjects_[myProjName]
+      };
+    });
+
+    if (myDatasets.length === 0) {
+      myDatasets.push({
+        label: 'Brak aktywności',
+        data: myDailySeries.map(function () { return 0; }),
+        borderColor: 'hsl(217, 91%, 60%)',
+        backgroundColor: myIsOverlay ? 'transparent' : 'hsla(217, 91%, 60%, 0.1)',
+        fill: !myIsOverlay,
+        tension: 0.1,
+        borderWidth: 2,
+        pointRadius: 0
+      });
+    }
+
+    if (myLimitOptions && myLabels.length > 0) {
+      myDatasets.push(myBuildLimitDataset_(
+        myLabels.length,
+        myLimitOptions.limitValue,
+        myLimitOptions.toggleId,
+        myLimitOptions.label
+      ));
+    }
+
+    const MY_TOOLTIP_CURSOR_OFFSET_X = 20;
+    if (window.Chart && Chart.Tooltip && Chart.Tooltip.positioners) {
+      Chart.Tooltip.positioners.myFollowCursor = function (myElements, myEventPosition) {
+        if (!myElements || !myElements.length || !myEventPosition || typeof myEventPosition.x === 'undefined') {
+          return false;
+        }
+        if (this.chart && this.chart._myDragSelection && this.chart._myDragSelection.isDragging) {
+          return false;
+        }
+        const myChartArea = this.chart && this.chart.chartArea;
+        const myRightBoundary = myChartArea ? myChartArea.right : ((this.chart && this.chart.width) || 800);
+        const myTooltipWidth = this.width || 180;
+        const myIsFlippedToLeft = (myEventPosition.x + MY_TOOLTIP_CURSOR_OFFSET_X + myTooltipWidth > myRightBoundary);
+        const myOffsetX = myIsFlippedToLeft ? -MY_TOOLTIP_CURSOR_OFFSET_X : MY_TOOLTIP_CURSOR_OFFSET_X;
+
+        return {
+          x: myEventPosition.x + myOffsetX,
+          y: myEventPosition.y,
+          xAlign: myIsFlippedToLeft ? 'right' : 'left'
+        };
+      };
+    }
+
+    const myCalendarBoundaryGridPlugin = {
+      id: 'myCalendarBoundaryGrid',
+      beforeDatasetsDraw: function (myChart) {
+        myDrawSkippedBoundaryGrid_(myChart, myCalendarData);
+      }
+    };
+
+    const myVerticalGuideLinePlugin = {
+      id: 'myVerticalGuideLine',
+      beforeDatasetsDraw: function (myChart) {
+        if (!myChart.tooltip) return;
+        if (myChart._myDragSelection && myChart._myDragSelection.isDragging) return;
+        const myActive = typeof myChart.tooltip.getActiveElements === 'function'
+          ? myChart.tooltip.getActiveElements()
+          : myChart.tooltip._active;
+        if (!myActive || !myActive.length || !myActive[0].element) return;
+
+        const myX = myActive[0].element.x;
+        const myChartArea = myChart.chartArea;
+        if (!myChartArea) return;
+
+        const myCtx = myChart.ctx;
+        myCtx.save();
+        myCtx.beginPath();
+        myCtx.moveTo(myX, myChartArea.top);
+        myCtx.lineTo(myX, myChartArea.bottom);
+        myCtx.lineWidth = 1;
+        myCtx.setLineDash([4, 4]);
+        myCtx.strokeStyle = 'hsla(215, 20%, 65%, 0.45)';
+        myCtx.stroke();
+        myCtx.restore();
+      }
+    };
+
+    const myDragSelectionPlugin = {
+      id: 'myDragSelectionPlugin',
+      afterDraw: function (myChart) {
+        const myDrag = myChart._myDragSelection;
+        if (!myDrag || (!myDrag.isDragging && !myDrag.isFrozen)) return;
+
+        const myArea = myChart.chartArea;
+        if (!myArea) return;
+
+        const myXScale = myChart.scales.x;
+        const myLabelsList = myChart.data.labels || [];
+        if (!myLabelsList.length) return;
+
+        const myRawLeft = Math.max(myArea.left, Math.min(myDrag.startX, myDrag.currentX));
+        const myRawRight = Math.min(myArea.right, Math.max(myDrag.startX, myDrag.currentX));
+        if (myRawRight - myRawLeft < 3) return;
+
+        let myStartIdx;
+        let myEndIdx;
+
+        if (myDrag.isFrozen && myDrag.startIdx !== undefined && myDrag.endIdx !== undefined) {
+          myStartIdx = myDrag.startIdx;
+          myEndIdx = myDrag.endIdx;
+        } else {
+          const myIdx1 = Math.round(myXScale.getValueForPixel(myRawLeft));
+          const myIdx2 = Math.round(myXScale.getValueForPixel(myRawRight));
+          myStartIdx = Math.max(0, Math.min(myLabelsList.length - 1, Math.min(myIdx1, myIdx2)));
+          myEndIdx = Math.max(0, Math.min(myLabelsList.length - 1, Math.max(myIdx1, myIdx2)));
+          if (myStartIdx === myEndIdx) {
+            if (myEndIdx < myLabelsList.length - 1) {
+              myEndIdx++;
+            } else if (myStartIdx > 0) {
+              myStartIdx--;
+            }
+          }
+        }
+
+        const myLeft = myXScale.getPixelForValue(myStartIdx);
+        const myRight = myXScale.getPixelForValue(myEndIdx);
+        const myWidth = myRight - myLeft;
+        if (myWidth < 1) return;
+
+        const myCtx = myChart.ctx;
+        myCtx.save();
+
+        myCtx.fillStyle = 'hsla(217, 91%, 60%, 0.18)';
+        myCtx.fillRect(myLeft, myArea.top, myWidth, myArea.bottom - myArea.top);
+
+        myCtx.strokeStyle = 'hsl(217, 91%, 60%)';
+        myCtx.lineWidth = 1.5;
+        myCtx.setLineDash([3, 3]);
+        myCtx.beginPath();
+        myCtx.moveTo(myLeft, myArea.top);
+        myCtx.lineTo(myLeft, myArea.bottom);
+        myCtx.moveTo(myRight, myArea.top);
+        myCtx.lineTo(myRight, myArea.bottom);
+        myCtx.stroke();
+
+        if (myDrag.isFrozen) {
+          const myMidY = (myArea.top + myArea.bottom) / 2;
+          myCtx.fillStyle = 'hsl(217, 91%, 60%)';
+          myCtx.beginPath();
+          if (typeof myCtx.roundRect === 'function') {
+            myCtx.roundRect(myLeft - 2, myMidY - 14, 4, 28, 2);
+            myCtx.roundRect(myRight - 2, myMidY - 14, 4, 28, 2);
+          } else {
+            myCtx.rect(myLeft - 2, myMidY - 14, 4, 28);
+            myCtx.rect(myRight - 2, myMidY - 14, 4, 28);
+          }
+          myCtx.fill();
+        }
+
+        if (!myDrag.isFrozen) {
+          const myBadgeText = (myLabelsList[myStartIdx] || '') + ' → ' + (myLabelsList[myEndIdx] || '') + '  ↵';
+          myCtx.font = '600 11px Inter, sans-serif';
+          const myTextWidth = myCtx.measureText(myBadgeText).width;
+          const myBadgeWidth = myTextWidth + 24;
+          const myBadgeHeight = 24;
+          let myBadgeX = myLeft + (myWidth - myBadgeWidth) / 2;
+          myBadgeX = Math.max(myArea.left + 4, Math.min(myArea.right - myBadgeWidth - 4, myBadgeX));
+          const myBadgeY = myArea.top + 8;
+
+          myCtx.save();
+          myCtx.shadowColor = 'hsla(222, 47%, 5%, 0.6)';
+          myCtx.shadowBlur = 8;
+          myCtx.shadowOffsetY = 3;
+
+          myCtx.fillStyle = 'hsl(222, 40%, 15%)';
+          myCtx.strokeStyle = 'hsla(217, 33%, 30%, 0.8)';
+          myCtx.lineWidth = 1;
+          myCtx.setLineDash([]);
+          myCtx.beginPath();
+          if (typeof myCtx.roundRect === 'function') {
+            myCtx.roundRect(myBadgeX, myBadgeY, myBadgeWidth, myBadgeHeight, 6);
+          } else {
+            myCtx.rect(myBadgeX, myBadgeY, myBadgeWidth, myBadgeHeight);
+          }
+          myCtx.fill();
+          myCtx.stroke();
+          myCtx.restore();
+
+          myCtx.fillStyle = 'hsl(210, 40%, 98%)';
+          myCtx.textAlign = 'center';
+          myCtx.textBaseline = 'middle';
+          myCtx.fillText(myBadgeText, myBadgeX + myBadgeWidth / 2, myBadgeY + myBadgeHeight / 2);
+        }
+
+        myCtx.restore();
+      }
+    };
+
+    const myChartAreaBorderPlugin = {
+      id: 'myChartAreaBorder',
+      afterDatasetsDraw: function (myChart) {
+        const myChartArea = myChart.chartArea;
+        if (!myChartArea) return;
+        const myCtx = myChart.ctx;
+        myCtx.save();
+        myCtx.strokeStyle = 'hsla(217, 33%, 45%, 0.8)';
+        myCtx.lineWidth = 1;
+        myCtx.setLineDash([]);
+        myCtx.strokeRect(
+          Math.floor(myChartArea.left) + 0.5,
+          Math.floor(myChartArea.top) + 0.5,
+          Math.floor(myChartArea.width),
+          Math.floor(myChartArea.height)
+        );
+        myCtx.restore();
+      }
+    };
+
+    const myTooltipDividerPlugin = {
+      id: 'myTooltipDivider',
+      afterTooltipDraw: function (myChart, myArgs) {
+        const myTooltip = myArgs && myArgs.tooltip;
+        if (!myTooltip || myTooltip.opacity === 0) return;
+        if (!myTooltip.footer || !myTooltip.footer.length) return;
+
+        const myOpts = myTooltip.options || {};
+        const myPad = (typeof myOpts.padding === 'number') ? myOpts.padding : 6;
+        const myMarginTop = (typeof myOpts.footerMarginTop === 'number') ? myOpts.footerMarginTop : 8;
+        const myLineHeight = 14;
+        const myY = Math.round(myTooltip.y + myTooltip.height - myPad - myLineHeight - (myMarginTop / 2)) + 0.5;
+
+        const myCtx = myChart.ctx;
+        myCtx.save();
+        myCtx.strokeStyle = 'hsla(217, 33%, 60%, 0.7)';
+        myCtx.lineWidth = 1;
+        myCtx.beginPath();
+        myCtx.moveTo(myTooltip.x + myPad, myY);
+        myCtx.lineTo(myTooltip.x + myTooltip.width - myPad, myY);
+        myCtx.stroke();
+        myCtx.restore();
+      }
+    };
+
+    const MY_X_TICK_COLOR_SPECS = Object.freeze({
+      CHANGE: Object.freeze({ cssVar: '--my-text-medium', fallback: 'hsl(213, 30%, 82%)' }),
+      NORMAL: Object.freeze({ cssVar: '--my-text-secondary', fallback: 'hsl(215, 20%, 65%)' })
+    });
+    const MY_TOOLTIP_BG_SPEC = Object.freeze({ cssVar: '--my-bg-base', fallback: 'hsl(222, 47%, 11%)' });
+    const MY_TOOLTIP_BORDER_COLOR = 'hsl(217, 33%, 32%)';
+    const myRootStyles = getComputedStyle(document.documentElement);
+    /**
+     * Resolve CSS custom property color with fallback literal.
+     * @param {Object} myColorSpec - Token name and fallback color pair.
+     * @return {string} Resolved CSS color string.
+     */
+    const myResolveCssColor = function (myColorSpec) {
+      return myRootStyles.getPropertyValue(myColorSpec.cssVar).trim() || myColorSpec.fallback;
+    };
+    const myXTickColors = Object.freeze({
+      change: myResolveCssColor(MY_X_TICK_COLOR_SPECS.CHANGE),
+      normal: myResolveCssColor(MY_X_TICK_COLOR_SPECS.NORMAL)
+    });
+
+    const myChartInstance = new Chart(myCtx, {
+      type: 'line',
+      data: {
+        labels: myLabels,
+        datasets: myDatasets
+      },
+      plugins: [myCalendarBoundaryGridPlugin, myVerticalGuideLinePlugin, myDragSelectionPlugin, myChartAreaBorderPlugin, myTooltipDividerPlugin],
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: {
+          mode: 'index',
+          intersect: false
+        },
+        plugins: {
+          legend: {
+            display: true,
+            position: 'top',
+            onClick: function (myEvent, myLegendItem, myLegend) {
+              const myChart = myLegend.chart;
+              const myDs = myChart.data.datasets[myLegendItem.datasetIndex];
+              if (!myDs || myDs.isLimitLine) return;
+              const myProjName = myDs.label;
+              const myIsVisible = myChart.isDatasetVisible(myLegendItem.datasetIndex);
+
+              if (myIsVisible) {
+                myHiddenProjects_[myProjName] = true;
+              } else {
+                delete myHiddenProjects_[myProjName];
+              }
+              mySaveHiddenProjects_();
+
+              [myDailyQuotaChartInstance, myPeakDurationChartInstance].forEach(function (myInst) {
+                if (!myInst) return;
+                myInst.data.datasets.forEach(function (d, myIdx) {
+                  if (d.label === myProjName) {
+                    if (myHiddenProjects_[myProjName]) {
+                      myInst.hide(myIdx);
+                    } else {
+                      myInst.show(myIdx);
+                    }
+                  }
+                });
+              });
+            },
+            labels: {
+              color: 'hsl(215, 20%, 65%)',
+              font: { size: 11 },
+              boxWidth: myIsOverlay ? 16 : 10,
+              boxHeight: myIsOverlay ? 2 : 10,
+              usePointStyle: myIsOverlay,
+              pointStyle: myIsOverlay ? 'line' : undefined,
+              pointStyleWidth: myIsOverlay ? 16 : undefined,
+              sort: function (a, b) {
+                return a.text.localeCompare(b.text);
+              },
+              filter: function (myLegendItem, myChartData) {
+                const myDs = myChartData.datasets[myLegendItem.datasetIndex];
+                return !myDs || !myDs.isLimitLine;
+              }
+            }
+          },
+          tooltip: {
+            position: 'myFollowCursor',
+            animation: { duration: 0 },
+            backgroundColor: myResolveCssColor(MY_TOOLTIP_BG_SPEC),
+            borderColor: MY_TOOLTIP_BORDER_COLOR,
+            borderWidth: 1,
+            footerColor: myXTickColors.change,
+            usePointStyle: myIsOverlay,
+            boxWidth: myIsOverlay ? 14 : 10,
+            boxHeight: myIsOverlay ? 14 : 10,
+            itemSort: function (a, b) {
+              return a.dataset.label.localeCompare(b.dataset.label);
+            },
+            filter: function (myTooltipItem) {
+              if (!myTooltipItem.dataset || myTooltipItem.dataset.isLimitLine) return false;
+              if (!myIsOverlay && (!myTooltipItem.raw || myTooltipItem.raw <= 0)) return false;
+              return true;
+            },
+            callbacks: {
+              title: function (myTooltipItems) {
+                if (!myTooltipItems || !myTooltipItems.length) return '';
+                return myLabels[myTooltipItems[0].dataIndex] || '';
+              },
+              labelPointStyle: myIsOverlay ? function () {
+                return { pointStyle: 'line', rotation: 0 };
+              } : undefined,
+              labelTextColor: myIsSubdailyCumulative ? function (myCtxItem) {
+                return myGetTooltipDeltaSec_(myCtxItem) > 0 ? 'hsl(210, 40%, 98%)' : 'hsla(215, 20%, 65%, 0.72)';
+              } : undefined,
+              labelColor: function (myCtxItem) {
+                const myDs = myCtxItem.dataset;
+                const myBorder = (myDs && myDs.borderColor) ? myDs.borderColor : 'hsl(217, 91%, 60%)';
+                const myFill = (myDs && myDs.backgroundColor) ? myDs.backgroundColor : myBorder;
+                return {
+                  borderColor: myBorder,
+                  backgroundColor: myIsOverlay ? myBorder : myFill,
+                  borderWidth: 2
+                };
+              },
+              label: function (myCtxItem) {
+                if (myCtxItem.raw === null || typeof myCtxItem.raw === 'undefined') return '';
+                if (!myIsOverlay && myCtxItem.raw <= 0) return null;
+                if (myCtxItem.dataset && myCtxItem.dataset.isLimitLine) return null;
+                if (!myIsOverlay && myIsCumulativeDaily) {
+                  return myFormatStackedTooltipLabel_(myCtxItem, myCalendarData.isDaily);
+                }
+                const myFnName = (myIsOverlay && myCtxItem.dataset.fnNames) ? myCtxItem.dataset.fnNames[myCtxItem.dataIndex] : '';
+                const myFnSuffix = myFnName ? ' (' + myFnName + ')' : '';
+                return ' ' + myFormatDurationFixed_(myCtxItem.raw) + ' - ' + myCtxItem.dataset.label + myFnSuffix;
+              },
+              footer: function (myTooltipItems) {
+                if (myIsOverlay || !myTooltipItems || !myTooltipItems.length) return '';
+                if (myIsCumulativeDaily) {
+                  return myFormatStackedTooltipFooter_(myTooltipItems, myCalendarData.isDaily, myQuotaLimitSec);
+                }
+                let myTotalSec = 0;
+                myTooltipItems.forEach(function (myIt) {
+                  if (myIt && typeof myIt.raw === 'number') {
+                    myTotalSec += myIt.raw;
+                  }
+                });
+                if (myTotalSec <= 0) return '';
+                return myFormatDurationFixed_(myTotalSec) + ' - Suma';
+              }
+            }
+          }
+        },
+        scales: {
+          x: {
+            stacked: !myIsOverlay,
+            grid: {
+              color: function (myCtx) {
+                return myGetXGridStyle_(myCtx).color;
+              },
+              tickColor: function (myCtx) {
+                return myGetXGridStyle_(myCtx).tickColor;
+              },
+              lineWidth: function (myCtx) {
+                return myGetXGridStyle_(myCtx).lineWidth;
+              }
+            },
+            afterFit: function (myScale) {
+              myApplyPostSkipDeltaTicks_(myScale, myLabels, myCalendarData);
+            },
+            ticks: {
+              color: function (myCtx) {
+                return (myCtx && myCtx.tick && myCtx.tick.myIsChange) ? myXTickColors.change : myXTickColors.normal;
+              },
+              font: function (myCtx) {
+                const myIsBold = Boolean(myCtx.tick && myCtx.tick.myIsChange);
+                return {
+                  size: MY_TICK_FONT_SIZE_PX,
+                  weight: myIsBold ? MY_TICK_FONT_WEIGHT_BOLD : MY_TICK_FONT_WEIGHT_NORMAL
+                };
+              },
+              autoSkip: false,
+              maxRotation: 0,
+              minRotation: 0,
+              callback: function (myVal, myIdx) {
+                const myIsDaily = Boolean(myLabels[0] && myLabels[0].length <= MY_DAILY_KEY_LENGTH);
+                if (myIsDaily) {
+                  return myIdx === 0 ? MY_TICK_TEMPLATE_DAILY_FIRST : MY_TICK_TEMPLATE_DAILY_REST;
+                }
+                return myIdx === 0 ? MY_TICK_TEMPLATE_SUBDAILY_FIRST : MY_TICK_TEMPLATE_SUBDAILY_REST;
+              }
+            }
+          },
+          y: {
+            stacked: !myIsOverlay,
+            beginAtZero: true,
+            grid: { color: 'hsla(217, 33%, 30%, 0.2)' },
+            ticks: {
+              color: 'hsl(215, 20%, 65%)',
+              font: { size: 11 },
+              callback: function (myVal) {
+                const myM = Math.floor(myVal / 60);
+                const myS = Math.round(myVal % 60);
+                return myM + ':' + (myS < 10 ? '0' : '') + myS;
+              }
+            }
+          }
+        }
+      }
+    });
+
+    myCanvas._myChartInstance = myChartInstance;
+    myCanvas.style.cursor = 'crosshair';
+
+    if (!myCanvas._myDragEventsBound) {
+      myCanvas._myDragEventsBound = true;
+
+      myCanvas.addEventListener('pointerdown', function (myEvt) {
+        const myInst = myCanvas._myChartInstance;
+        if (!myInst || !myInst.chartArea) return;
+        const myRect = myCanvas.getBoundingClientRect();
+        const myX = myEvt.clientX - myRect.left;
+        const myY = myEvt.clientY - myRect.top;
+        const myArea = myInst.chartArea;
+        if (myX < myArea.left || myX > myArea.right || myY < myArea.top || myY > myArea.bottom) {
+          return;
+        }
+
+        const myDrag = myInst._myDragSelection;
+
+        if (myDrag && myDrag.isFrozen) {
+          const myHitEdge = myGetChartSelectionEdge_(myDrag, myX);
+          if (myHitEdge) {
+            const myMinX = Math.min(myDrag.startX, myDrag.currentX);
+            const myMaxX = Math.max(myDrag.startX, myDrag.currentX);
+            myCanvas.setPointerCapture(myEvt.pointerId);
+            myDrag.isDragging = true;
+            myDrag.isFrozen = false;
+            myDrag.isResizing = myHitEdge;
+            myDrag.pointerId = myEvt.pointerId;
+            myDrag.startX = (myHitEdge === 'left') ? myMaxX : myMinX;
+            myDrag.currentX = myX;
+            myRemoveChartRangeBadgeButtons_();
+            return;
+          }
+        }
+
+        myDismissChartDragSelection_();
+        myCanvas.setPointerCapture(myEvt.pointerId);
+        myInst._myDragSelection = {
+          isDragging: true,
+          isFrozen: false,
+          isResizing: null,
+          pointerId: myEvt.pointerId,
+          startX: myX,
+          currentX: myX
+        };
+        if (myInst.tooltip) {
+          myInst.tooltip.setActiveElements([], { x: 0, y: 0 });
+        }
+      });
+
+      myCanvas.addEventListener('pointermove', function (myEvt) {
+        const myInst = myCanvas._myChartInstance;
+        if (!myInst || !myInst.chartArea) return;
+        const myRect = myCanvas.getBoundingClientRect();
+        const myX = Math.max(myInst.chartArea.left, Math.min(myInst.chartArea.right, myEvt.clientX - myRect.left));
+        const myDrag = myInst._myDragSelection;
+
+        if (myDrag && myDrag.isDragging) {
+          myDrag.currentX = myX;
+          if (myInst.tooltip) {
+            myInst.tooltip.setActiveElements([], { x: 0, y: 0 });
+          }
+          myInst.render();
+          return;
+        }
+
+        if (myDrag && myDrag.isFrozen) {
+          const myHitEdge = myGetChartSelectionEdge_(myDrag, myX);
+          myCanvas.style.cursor = myHitEdge ? 'ew-resize' : 'crosshair';
+          return;
+        }
+
+        myCanvas.style.cursor = 'crosshair';
+      });
+
+      const myEndDragHandler = function (myEvt) {
+        const myInst = myCanvas._myChartInstance;
+        if (!myInst || !myInst._myDragSelection || !myInst._myDragSelection.isDragging) return;
+        const myDrag = myInst._myDragSelection;
+        try {
+          myCanvas.releasePointerCapture(myEvt.pointerId);
+        } catch (myErr) { /* ignore */ }
+        myDrag.isDragging = false;
+        myDrag.isResizing = null;
+
+        const myRect = myCanvas.getBoundingClientRect();
+        const myX = Math.max(myInst.chartArea.left, Math.min(myInst.chartArea.right, myEvt.clientX - myRect.left));
+        const myMinPixel = Math.min(myDrag.startX, myX);
+        const myMaxPixel = Math.max(myDrag.startX, myX);
+        const myDist = myMaxPixel - myMinPixel;
+
+        const myLabelsList = myInst.data.labels || [];
+        if (myDist >= 15 && myLabelsList.length > 1) {
+          const myXScale = myInst.scales.x;
+          const myIdx1 = Math.round(myXScale.getValueForPixel(myMinPixel));
+          const myIdx2 = Math.round(myXScale.getValueForPixel(myMaxPixel));
+          let myStartIdx = Math.max(0, Math.min(myLabelsList.length - 1, Math.min(myIdx1, myIdx2)));
+          let myEndIdx = Math.max(0, Math.min(myLabelsList.length - 1, Math.max(myIdx1, myIdx2)));
+
+          if (myStartIdx === myEndIdx) {
+            if (myEndIdx < myLabelsList.length - 1) {
+              myEndIdx++;
+            } else if (myStartIdx > 0) {
+              myStartIdx--;
+            }
+          }
+
+          const mySnappedLeft = myXScale.getPixelForValue(myStartIdx);
+          const mySnappedRight = myXScale.getPixelForValue(myEndIdx);
+
+          myDrag.isFrozen = true;
+          myDrag.startX = mySnappedLeft;
+          myDrag.currentX = mySnappedRight;
+          myDrag.startIdx = myStartIdx;
+          myDrag.endIdx = myEndIdx;
+          myCanvas.style.cursor = 'crosshair';
+          myInst.render();
+
+          myShowChartRangeBadgeButton_(myCanvas, myInst, myStartIdx, myEndIdx);
+          return;
+        }
+
+        myInst._myDragSelection = null;
+        myCanvas.style.cursor = 'crosshair';
+        myInst.render();
+      };
+
+      myCanvas.addEventListener('pointerup', myEndDragHandler);
+      myCanvas.addEventListener('pointercancel', myEndDragHandler);
+
+      myCanvas.addEventListener('pointerleave', function () {
+        const myInst = myCanvas._myChartInstance;
+        if (!myInst || !myInst._myDragSelection || !myInst._myDragSelection.isDragging) {
+          myCanvas.style.cursor = 'crosshair';
+        }
+      });
+    }
+
+    return myChartInstance;
+  }
+
+  /**
+   * Render daily quota usage stacked area chart using Chart.js.
+   * @param {Array<Object>} myDailySeries - Daily quota points.
+   */
+  function myRenderDailyChart(myDailySeries) {
+    const myQuotaSec = (myLoadedSettings_ && myLoadedSettings_.quotaLimitSec) ? myLoadedSettings_.quotaLimitSec : MY_GAS_DAILY_QUOTA_SEC;
+    const myQuotaMins = Math.round(myQuotaSec / 60);
+    const myLabel = 'limit GAS (' + myQuotaMins + 'm / ' + myQuotaSec + 's)';
+
+    const myHeaderLabel = document.getElementById('myDailyQuotaLimitLabel');
+    if (myHeaderLabel) {
+      myHeaderLabel.innerText = myLabel;
+    }
+
+    myDailyQuotaChartInstance = myRenderTimeSeriesChart_(
+      'myChartDailyQuota',
+      myDailyQuotaChartInstance,
+      myDailySeries,
+      'byProjectCumulative',
+      MY_CHART_MODE.STACKED,
+      {
+        limitValue: myQuotaSec,
+        toggleId: 'myToggleDailyQuotaLimitLine',
+        label: myLabel,
+        deltaFieldKey: 'byProject',
+        isCumulativeDaily: true
+      }
+    );
+  }
+
+  /**
+   * Render peak execution duration overlay chart using Chart.js.
+   * @param {Array<Object>} myDailySeries - Daily series with byProjectMax.
+   */
+  function myRenderPeakDurationChart(myDailySeries) {
+    myPeakDurationChartInstance = myRenderTimeSeriesChart_(
+      'myChartPeakDuration',
+      myPeakDurationChartInstance,
+      myDailySeries,
+      'byProjectMax',
+      MY_CHART_MODE.OVERLAY,
+      {
+        limitValue: MY_GAS_MAX_EXECUTION_SEC,
+        toggleId: 'myToggleLimitLine',
+        label: 'limit GAS (6 min / 360s)'
+      }
+    );
+  }
+
+  /**
+   * Bind change event for limit line toggle checkbox.
+   * @param {string} myToggleId - DOM checkbox element ID.
+   * @param {Function} myGetInstance - Callback returning Chart.js instance.
+   */
+  function myBindLimitToggle_(myToggleId, myGetInstance) {
+    const myToggle = document.getElementById(myToggleId);
+    if (!myToggle || myToggle.dataset.initialized) return;
+    myToggle.dataset.initialized = 'true';
+    myToggle.addEventListener('change', function () {
+      const myChart = myGetInstance();
+      if (myChart) {
+        const myLimitDs = myChart.data.datasets.find(function (d) {
+          return d.isLimitLine;
+        });
+        if (myLimitDs) {
+          myLimitDs.hidden = !myToggle.checked;
+          myChart.update();
+        }
+      }
+      mySaveViewState_();
+    });
+  }
+
+  /**
+   * Initialize all chart limit line toggles.
+   */
+  function myInitLimitLineToggles_() {
+    myBindLimitToggle_('myToggleLimitLine', function () {
+      return myPeakDurationChartInstance;
+    });
+    myBindLimitToggle_('myToggleDailyQuotaLimitLine', function () {
+      return myDailyQuotaChartInstance;
+    });
+  }
+</script>

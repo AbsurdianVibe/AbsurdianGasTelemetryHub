@@ -1,5 +1,11 @@
 /**
- * Boundary API layer for WebApp client-side RPC calls.
+ * Boundary RPC controller exposed to the browser client via `google.script.run`.
+ *
+ * Protects every endpoint with a strict single-owner check comparing the active caller email
+ * against the script owner (`403` error on mismatch). Serves lightweight freshness checks from
+ * Script Properties, full retention-window bootstrap payloads, incremental delta updates since
+ * a client timestamp, manual collector runs, settings updates, and legacy server-aggregated
+ * dashboard queries.
  */
 
 /**

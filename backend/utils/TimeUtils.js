@@ -1,5 +1,12 @@
 /**
- * Date, time and duration helper utilities.
+ * Server-side date formatting, duration helpers, and time-series bucket calculations.
+ *
+ * Converts timestamps into ISO strings and timezone-aware calendar day keys (`yyyy-MM-dd`)
+ * for daily quota calculations. Also selects automatic chart resolution from range length,
+ * falls back to dynamic minute buckets when a fixed step would exceed 1000 continuous points,
+ * and formats timestamps into matching bucket keys during server-side aggregation.
+ *
+ * Loaded early via `filePushOrder` because it defines top-level bucket limit constants.
  */
 
 /**

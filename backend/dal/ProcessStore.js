@@ -1,5 +1,11 @@
 /**
- * Storage layer for telemetry processes using Google Sheets.
+ * Google Sheets storage layer for raw process telemetry records.
+ *
+ * Lazily opens or creates the backing `AbsurdianGasTelemetryHub_Data` spreadsheet and tracks
+ * its ID in Script Properties. Writes new process rows in batches while deduplicating against
+ * keys already stored within the recent overlap window, reads full or incremental time ranges
+ * for RPC endpoints, and prunes expired rows from the top of the sheet based on retention
+ * (assuming chronological append order).
  */
 
 /**

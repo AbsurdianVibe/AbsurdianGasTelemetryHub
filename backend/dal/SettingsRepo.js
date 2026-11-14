@@ -1,5 +1,10 @@
 /**
- * Repository for script settings and synchronization cursor.
+ * Data access repository for app settings and the incremental sync cursor.
+ *
+ * Persists user configuration (data retention window and daily trigger quota limit) and the
+ * latest collected process timestamp inside Google Apps Script `PropertiesService`. Applies
+ * safe defaults and range validation when reading or updating settings so corrupted or missing
+ * properties never break the collector or WebApp API.
  *
  * @typedef {Object} ISettings
  * @property {number} retentionDays - Data retention in days.

@@ -1,0 +1,379 @@
+<script>
+  /**
+   * Foundation state and browser-infrastructure module loaded first in the frontend pipeline.
+   *
+   * What happens in this file:
+   * - Holds the shared in-memory runtime state used by every view, chart, and filter module
+   *   (active tab, time window, resolution mode, settings, cached processes, and drag state).
+   * - Persists UI preferences, project colors, hidden chart series, sync timestamps, and raw
+   *   process rows in browser `localStorage` for instant startup rendering before RPC completes.
+   * - Assigns stable deterministic colors per project, trims local cache when retention shrinks,
+   *   wraps `google.script.run` in Promises, and provides shared date/duration formatters.
+   */
+
+  let myDailyQuotaChartInstance = null;
+  let myPeakDurationChartInstance = null;
+  let myActiveViewName = 'overview';
+  const myTabScrollPositions_ = {};
+
+  const MY_STORAGE_KEY_VIEW_STATE = 'myGasTelemetryHub_viewState';
+  const MY_STORAGE_KEY_PROCESSES = 'myGasTelemetryHub_cachedProcesses';
+  const MY_STORAGE_KEY_LAST_SYNC = 'myGasTelemetryHub_lastSync';
+  const MY_STORAGE_KEY_SETTINGS = 'myGasTelemetryHub_settings';
+  const MY_STORAGE_KEY_PROJECT_COLORS = 'myGasTelemetryHub_projectColors';
+  const MY_STORAGE_KEY_HIDDEN_PROJECTS = 'myGasTelemetryHub_hiddenProjects';
+
+  let myGlobalFromIso = '';
+  let myGlobalToIso = '';
+  let myGlobalResolution = 'auto';
+  let myGlobalPresetDays = 30;
+  let myAppliedFromInputValue_ = '';
+  let myAppliedToInputValue_ = '';
+  let myLoadedSettings_ = null;
+
+  let myCachedProcesses_ = [];
+  let myCachedMaxTime_ = '';
+  let myClientLastSync_ = '';
+  let myLastFreshnessCheckMs_ = 0;
+  let mySettings_ = { retentionDays: 30, quotaLimitSec: 5400 };
+
+  const MY_GAS_DAILY_QUOTA_SEC = 5400;
+  const MY_GAS_MAX_EXECUTION_SEC = 360;
+
+  const MY_CHART_MODE = Object.freeze({
+    STACKED: 'STACKED',
+    OVERLAY: 'OVERLAY'
+  });
+
+  const MY_MS_PER_DAY = 86400000;
+  const MY_DEFAULT_RETENTION_DAYS = 30;
+
+  /**
+   * Promise wrapper for google.script.run server calls.
+   * @param {string} myMethodName - Remote function name.
+   * @param {...*} myArgs - Arguments to pass.
+   * @return {Promise<*>} Server response promise.
+   */
+  function myCallServer(myMethodName, ...myArgs) {
+    return new Promise(function (myResolve, myReject) {
+      if (typeof google === 'undefined' || !google.script || !google.script.run) {
+        myReject(new Error('google.script.run is not available in local mode.'));
+        return;
+      }
+      const myRunner = google.script.run
+        .withSuccessHandler(myResolve)
+        .withFailureHandler(myReject);
+      myRunner[myMethodName].apply(myRunner, myArgs);
+    });
+  }
+
+  /**
+   * Format duration in seconds to human readable string.
+   * @param {number} mySec - Duration in seconds.
+   * @return {string} Formatted duration.
+   */
+  function myFormatDurationClient(mySec) {
+    if (!mySec || isNaN(mySec)) return '0.0s';
+    if (mySec < 60) return mySec.toFixed(1) + 's';
+    const myMins = Math.floor(mySec / 60);
+    const myRemainder = (mySec % 60).toFixed(0);
+    if (myMins < 60) return myMins + 'm ' + myRemainder + 's';
+    return Math.floor(myMins / 60) + 'h ' + (myMins % 60) + 'm';
+  }
+
+  /**
+   * Format duration in seconds to fixed-width MM:SS.0s mask.
+   * @param {number} mySec - Duration in seconds.
+   * @return {string} Formatted duration with mask 00:00.0s.
+   */
+  function myFormatDurationFixed_(mySec) {
+    if (!mySec || isNaN(mySec)) return '00:00.0s';
+    const myTotalTenths = Math.round(Math.max(0, Number(mySec)) * 10);
+    const myTenths = myTotalTenths % 10;
+    const myTotalSec = Math.floor(myTotalTenths / 10);
+    const mySeconds = myTotalSec % 60;
+    const myMins = Math.floor(myTotalSec / 60);
+    const myPad2 = function (n) { return (n < 10) ? '0' + n : '' + n; };
+    return myPad2(myMins) + ':' + myPad2(mySeconds) + '.' + myTenths + 's';
+  }
+
+  /**
+   * Pad number to 2 digits with leading zero.
+   * @param {number} myVal - Number to pad.
+   * @return {string} Padded 2-char string.
+   */
+  function myPadZero2_(myVal) {
+    return String(myVal).padStart(2, '0');
+  }
+
+  /**
+   * Pad number to 4 digits with leading zeros.
+   * @param {number} myVal - Number to pad.
+   * @return {string} Padded 4-char string.
+   */
+  function myPadZero4_(myVal) {
+    return String(myVal).padStart(4, '0');
+  }
+
+  const MY_CHART_COLOR_PALETTE = Object.freeze([
+    { fill: 'hsla(217, 91%, 60%, 0.45)', border: 'hsl(217, 91%, 60%)' }, // Blue
+    { fill: 'hsla(142, 71%, 45%, 0.45)', border: 'hsl(142, 71%, 45%)' }, // Green
+    { fill: 'hsla(260, 80%, 65%, 0.45)', border: 'hsl(260, 80%, 65%)' }, // Purple
+    { fill: 'hsla(38, 92%, 50%, 0.45)', border: 'hsl(38, 92%, 50%)' },   // Amber
+    { fill: 'hsla(330, 80%, 60%, 0.45)', border: 'hsl(330, 80%, 60%)' }, // Pink
+    { fill: 'hsla(180, 70%, 45%, 0.45)', border: 'hsl(180, 70%, 45%)' }, // Teal
+    { fill: 'hsla(280, 70%, 50%, 0.45)', border: 'hsl(280, 70%, 50%)' }, // Indigo
+    { fill: 'hsla(15, 85%, 55%, 0.45)', border: 'hsl(15, 85%, 55%)' },   // Coral
+    { fill: 'hsla(80, 75%, 45%, 0.45)', border: 'hsl(80, 75%, 45%)' }    // Lime
+  ]);
+
+  let myProjectColorRegistry_ = {};
+  let myHiddenProjects_ = {};
+
+  /**
+   * Restore project colors registry from localStorage.
+   */
+  function myRestoreProjectColors_() {
+    try {
+      const myRaw = localStorage.getItem(MY_STORAGE_KEY_PROJECT_COLORS);
+      if (myRaw) {
+        myProjectColorRegistry_ = JSON.parse(myRaw) || {};
+      }
+    } catch (myErr) {
+      myProjectColorRegistry_ = {};
+    }
+  }
+
+  /**
+   * Save project colors registry to localStorage.
+   */
+  function mySaveProjectColors_() {
+    try {
+      localStorage.setItem(MY_STORAGE_KEY_PROJECT_COLORS, JSON.stringify(myProjectColorRegistry_));
+    } catch (myErr) {
+      // Ignore storage errors
+    }
+  }
+
+  /**
+   * Restore hidden projects registry from localStorage.
+   */
+  function myRestoreHiddenProjects_() {
+    try {
+      const myRaw = localStorage.getItem(MY_STORAGE_KEY_HIDDEN_PROJECTS);
+      if (myRaw) {
+        myHiddenProjects_ = JSON.parse(myRaw) || {};
+      }
+    } catch (myErr) {
+      myHiddenProjects_ = {};
+    }
+  }
+
+  /**
+   * Save hidden projects registry to localStorage.
+   */
+  function mySaveHiddenProjects_() {
+    try {
+      localStorage.setItem(MY_STORAGE_KEY_HIDDEN_PROJECTS, JSON.stringify(myHiddenProjects_));
+    } catch (myErr) {
+      // Ignore storage errors
+    }
+  }
+
+  /**
+   * Deterministically get consistent color palette for a project and persist it.
+   * @param {string} myProjectName - Name of the project.
+   * @return {Object} Color entry with fill and border.
+   */
+  function myGetProjectColor_(myProjectName) {
+    if (!myProjectColorRegistry_[myProjectName]) {
+      const myAssignedCount = Object.keys(myProjectColorRegistry_).length;
+      myProjectColorRegistry_[myProjectName] = MY_CHART_COLOR_PALETTE[myAssignedCount % MY_CHART_COLOR_PALETTE.length];
+      mySaveProjectColors_();
+    }
+    return myProjectColorRegistry_[myProjectName];
+  }
+
+  /**
+   * Save processes array and sync timestamp to localStorage.
+   */
+  function mySaveProcessesToStorage_() {
+    try {
+      localStorage.setItem(MY_STORAGE_KEY_LAST_SYNC, myClientLastSync_ || '');
+      localStorage.setItem(MY_STORAGE_KEY_SETTINGS, JSON.stringify(mySettings_));
+      localStorage.setItem(MY_STORAGE_KEY_PROCESSES, JSON.stringify(myCachedProcesses_));
+    } catch (myErr) {
+      // Ignore quota exceeded
+    }
+  }
+
+  /**
+   * Restore processes array from localStorage.
+   * @return {boolean} True if restored.
+   */
+  function myRestoreProcessesFromStorage_() {
+    try {
+      const myRaw = localStorage.getItem(MY_STORAGE_KEY_PROCESSES);
+      const mySync = localStorage.getItem(MY_STORAGE_KEY_LAST_SYNC);
+      const mySettingsRaw = localStorage.getItem(MY_STORAGE_KEY_SETTINGS);
+      if (mySettingsRaw) {
+        mySettings_ = JSON.parse(mySettingsRaw);
+        myLoadedSettings_ = {
+          retentionDays: Number(mySettings_.retentionDays) || 30,
+          quotaLimitSec: Number(mySettings_.quotaLimitSec) || 5400
+        };
+        const myRetEl = document.getElementById('myInputRetention');
+        const myRetDisp = document.getElementById('myRetentionDisplay');
+        const myQuotaEl = document.getElementById('myInputQuota');
+        if (myRetEl) myRetEl.value = myLoadedSettings_.retentionDays;
+        if (myRetDisp) myRetDisp.innerText = myLoadedSettings_.retentionDays;
+        if (myQuotaEl) myQuotaEl.value = myLoadedSettings_.quotaLimitSec;
+        myCheckSettingsDirtyState_();
+      }
+      if (myRaw) {
+        myCachedProcesses_ = JSON.parse(myRaw);
+        myClientLastSync_ = mySync || '';
+        myUpdateCachedMaxTime_();
+        myUpdateSyncStatusDisplay_(myClientLastSync_);
+        return myCachedProcesses_.length > 0;
+      }
+    } catch (myErr) {
+      myCachedProcesses_ = [];
+    }
+    return false;
+  }
+
+  /**
+   * Prune cached processes older than retention threshold.
+   */
+  function myPruneClientExpiredRows_() {
+    if (!mySettings_ || !mySettings_.retentionDays || !myCachedProcesses_ || myCachedProcesses_.length === 0) return;
+    const myCutoffMs = Date.now() - (Number(mySettings_.retentionDays) * 86400000);
+    const myInitialCount = myCachedProcesses_.length;
+    myCachedProcesses_ = myCachedProcesses_.filter(function (p) {
+      return new Date(p.startTime).getTime() >= myCutoffMs;
+    });
+    if (myCachedProcesses_.length !== myInitialCount) {
+      myUpdateCachedMaxTime_();
+      mySaveProcessesToStorage_();
+    }
+  }
+
+  /**
+   * Recalculate highest startTime in cached processes.
+   */
+  function myUpdateCachedMaxTime_() {
+    let myMaxMs = 0;
+    myCachedProcesses_.forEach(function (myP) {
+      const myMs = new Date(myP.startTime).getTime();
+      if (myMs > myMaxMs) myMaxMs = myMs;
+    });
+    myCachedMaxTime_ = myMaxMs > 0 ? new Date(myMaxMs).toISOString() : '';
+  }
+
+  /**
+   * Persist current view state into browser localStorage.
+   */
+  function mySaveViewState_() {
+    try {
+      const myDailyToggle = document.getElementById('myToggleDailyQuotaLimitLine');
+      const myPeakToggle = document.getElementById('myToggleLimitLine');
+      const myState = {
+        activeTab: myActiveViewName,
+        presetDays: myGlobalPresetDays,
+        fromIso: myGlobalFromIso,
+        toIso: myGlobalToIso,
+        resolution: myGlobalResolution,
+        showDailyLimit: myDailyToggle ? myDailyToggle.checked : true,
+        showPeakLimit: myPeakToggle ? myPeakToggle.checked : true,
+        tabScrollPositions: myTabScrollPositions_
+      };
+      localStorage.setItem(MY_STORAGE_KEY_VIEW_STATE, JSON.stringify(myState));
+    } catch (myErr) {
+      // Ignore storage errors in private browsing
+    }
+  }
+
+  /**
+   * Restore view state from browser localStorage.
+   * @return {boolean} True if state was restored.
+   */
+  function myRestoreViewState_() {
+    try {
+      const myRaw = localStorage.getItem(MY_STORAGE_KEY_VIEW_STATE);
+      if (!myRaw) return false;
+      const myState = JSON.parse(myRaw);
+      if (!myState || typeof myState !== 'object') return false;
+
+      let myRestored = false;
+
+      if (myState.tabScrollPositions && typeof myState.tabScrollPositions === 'object') {
+        Object.assign(myTabScrollPositions_, myState.tabScrollPositions);
+      }
+
+      if (typeof myState.showDailyLimit === 'boolean') {
+        const myDailyToggle = document.getElementById('myToggleDailyQuotaLimitLine');
+        if (myDailyToggle) myDailyToggle.checked = myState.showDailyLimit;
+      }
+
+      if (typeof myState.showPeakLimit === 'boolean') {
+        const myPeakToggle = document.getElementById('myToggleLimitLine');
+        if (myPeakToggle) myPeakToggle.checked = myState.showPeakLimit;
+      }
+
+      if (myState.resolution) {
+        myGlobalResolution = myState.resolution;
+        myHighlightResolutionBtn_(myGlobalResolution);
+        myRestored = true;
+      }
+
+      if (myState.presetDays) {
+        myGlobalPresetDays = myState.presetDays;
+        const myDays = (myState.presetDays === 'all') ?
+          ((mySettings_ && mySettings_.retentionDays) ? mySettings_.retentionDays : 30) :
+          Number(myState.presetDays);
+        const myNow = new Date();
+        const myStart = new Date();
+        myStart.setDate(myStart.getDate() - myDays);
+
+        const myFromVal = myToDatetimeInputValue(myStart);
+        const myToVal = myToDatetimeInputValue(myNow);
+
+        document.getElementById('myInputTimeFrom').value = myFromVal;
+        document.getElementById('myInputTimeTo').value = myToVal;
+
+        myAppliedFromInputValue_ = myFromVal;
+        myAppliedToInputValue_ = myToVal;
+
+        myGlobalFromIso = myStart.toISOString();
+        myGlobalToIso = myNow.toISOString();
+        myHighlightPresetBtn_(myGlobalPresetDays);
+        myRestored = true;
+      } else if (myState.fromIso && myState.toIso) {
+        myGlobalPresetDays = null;
+        myHighlightPresetBtn_(null);
+        myGlobalFromIso = myState.fromIso;
+        myGlobalToIso = myState.toIso;
+        const myFromVal = myToDatetimeInputValue(new Date(myGlobalFromIso));
+        const myToVal = myToDatetimeInputValue(new Date(myGlobalToIso));
+        document.getElementById('myInputTimeFrom').value = myFromVal;
+        document.getElementById('myInputTimeTo').value = myToVal;
+        myAppliedFromInputValue_ = myFromVal;
+        myAppliedToInputValue_ = myToVal;
+        myRestored = true;
+      }
+
+      if (myState.activeTab && ['overview', 'projects', 'settings'].includes(myState.activeTab)) {
+        mySwitchView(myState.activeTab);
+        myRestored = true;
+      } else {
+        mySwitchView('overview');
+      }
+
+      return myRestored;
+    } catch (myErr) {
+      return false;
+    }
+    return false;
+  }
+</script>

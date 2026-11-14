@@ -1,5 +1,12 @@
 /**
- * Core collector orchestrator for telemetry sync.
+ * Core telemetry collection orchestrator for scheduled and manual sync runs.
+ *
+ * Runs under a script-wide lock (`LockService`) to prevent concurrent triggers or manual syncs
+ * from racing. Computes the query start time from the last saved cursor minus a 5-minute
+ * safety overlap (or falls back to the 7-day bootstrap window on first run), harvests user and
+ * monitored script processes, drops active/non-terminal executions, writes unique rows to
+ * storage, advances the cursor, prunes expired rows, and records the collection timestamp for
+ * fast client freshness checks.
  */
 
 /**

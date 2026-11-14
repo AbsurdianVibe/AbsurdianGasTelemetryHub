@@ -1,0 +1,224 @@
+<script>
+  /**
+   * Global time-window toolbar presets, edit state sync, and undo/redo history controller.
+   *
+   * What happens in this file:
+   * - Applies quick lookback presets (24h, 7d, 30d, or full retention) aligned to the latest
+   *   telemetry timestamp or current wall-clock time.
+   * - Compares draft date inputs against the applied range to toggle dirty-state styling and enable
+   *   or disable the apply and cancel toolbar buttons.
+   * - Maintains a 50-step in-memory Undo/Redo history stack of distinct windows synchronized with
+   *   toolbar navigation arrows and keyboard shortcuts.
+   */
+
+  const MY_TIME_WINDOW_HISTORY_MAX = 50;
+  const myTimeWindowHistory_ = [];
+  let myTimeWindowHistoryIndex_ = -1;
+  let myIsNavigatingHistory_ = false;
+
+  /**
+   * Highlight active preset button.
+   * @param {number|string|null} myPresetKey - Preset key or null.
+   */
+  function myHighlightPresetBtn_(myPresetKey) {
+    document.querySelectorAll('.my-time-presets .my-pill-btn').forEach(function (myBtn) {
+      myBtn.classList.remove('my-active-preset');
+    });
+    if (myPresetKey) {
+      const myId = (myPresetKey === 'all') ? 'myPresetBtnAll' : ('myPresetBtn' + myPresetKey + 'd');
+      const myBtn = document.getElementById(myId);
+      if (myBtn) myBtn.classList.add('my-active-preset');
+    }
+  }
+
+  /**
+   * Set time window inputs and refresh dashboard based on day preset.
+   * @param {number|string} myDaysCount - Lookback days count or 'all'.
+   */
+  function mySetTimeWindowPreset(myDaysCount) {
+    let myDays = myDaysCount;
+    if (myDaysCount === 'all') {
+      myDays = (mySettings_ && mySettings_.retentionDays) ? mySettings_.retentionDays : MY_DEFAULT_RETENTION_DAYS;
+    }
+    myGlobalPresetDays = myDaysCount;
+    const myNow = new Date();
+    const myStart = new Date();
+    myStart.setDate(myStart.getDate() - Number(myDays));
+
+    const myFromVal = myToDatetimeInputValue(myStart);
+    const myToVal = myToDatetimeInputValue(myNow);
+
+    document.getElementById('myInputTimeFrom').value = myFromVal;
+    document.getElementById('myInputTimeTo').value = myToVal;
+
+    myAppliedFromInputValue_ = myFromVal;
+    myAppliedToInputValue_ = myToVal;
+    myUpdateTimeWindowInputBounds_();
+    myCheckTimeWindowDirtyState_();
+
+    myHighlightPresetBtn_(myDaysCount);
+
+    myGlobalFromIso = myStart.toISOString();
+    myGlobalToIso = myNow.toISOString();
+    mySaveViewState_();
+
+    myLoadDashboard(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
+    myRecordTimeWindowHistory_();
+  }
+
+  /**
+   * Check dirty state for time window inputs.
+   */
+  function myCheckTimeWindowDirtyState_() {
+    const myFromEl = document.getElementById('myInputTimeFrom');
+    const myToEl = document.getElementById('myInputTimeTo');
+    const myApplyBtn = document.getElementById('myBtnApplyTimeWindow');
+    const myCancelBtn = document.getElementById('myBtnCancelTimeWindow');
+    if (!myApplyBtn || !myFromEl || !myToEl) return;
+
+    const myIsDirty = (myFromEl.value !== myAppliedFromInputValue_ || myToEl.value !== myAppliedToInputValue_);
+    myApplyBtn.disabled = !myIsDirty;
+    if (myCancelBtn) {
+      myCancelBtn.style.display = myIsDirty ? 'inline-flex' : 'none';
+    }
+  }
+
+  /**
+   * Revert time window inputs to currently applied values.
+   */
+  function myCancelTimeWindow() {
+    const myFromEl = document.getElementById('myInputTimeFrom');
+    const myToEl = document.getElementById('myInputTimeTo');
+    if (myFromEl) myFromEl.value = myAppliedFromInputValue_;
+    if (myToEl) myToEl.value = myAppliedToInputValue_;
+    if (myGlobalPresetDays) {
+      myHighlightPresetBtn_(myGlobalPresetDays);
+    }
+    myCheckTimeWindowDirtyState_();
+  }
+
+  /**
+   * Read time window inputs and apply global filter.
+   */
+  function myApplyTimeWindow() {
+    myValidateAndClampInputs_();
+
+    const myFromVal = document.getElementById('myInputTimeFrom').value;
+    const myToVal = document.getElementById('myInputTimeTo').value;
+    const myFromDate = myParseDatetimeInputValue_(myFromVal);
+    const myToDate = myParseDatetimeInputValue_(myToVal);
+
+    myGlobalPresetDays = null;
+    myHighlightPresetBtn_(null);
+
+    myGlobalFromIso = myFromDate ? myFromDate.toISOString() : '';
+    myGlobalToIso = myToDate ? myToDate.toISOString() : '';
+
+    myAppliedFromInputValue_ = myFromVal;
+    myAppliedToInputValue_ = myToVal;
+    myCheckTimeWindowDirtyState_();
+
+    mySaveViewState_();
+    myLoadDashboard(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
+    myRecordTimeWindowHistory_();
+  }
+
+  /**
+   * Update disabled states for undo and redo buttons.
+   */
+  function myUpdateTimeHistoryButtons_() {
+    const myBtnUndo = document.getElementById('myBtnUndoTimeWindow');
+    const myBtnRedo = document.getElementById('myBtnRedoTimeWindow');
+    if (myBtnUndo) {
+      myBtnUndo.disabled = (myTimeWindowHistoryIndex_ <= 0);
+    }
+    if (myBtnRedo) {
+      myBtnRedo.disabled = (myTimeWindowHistoryIndex_ >= myTimeWindowHistory_.length - 1);
+    }
+  }
+
+  /**
+   * Record current time window state into history stack.
+   */
+  function myRecordTimeWindowHistory_() {
+    if (myIsNavigatingHistory_) return;
+
+    const myFromEl = document.getElementById('myInputTimeFrom');
+    const myToEl = document.getElementById('myInputTimeTo');
+    const myNewState = {
+      fromIso: myGlobalFromIso,
+      toIso: myGlobalToIso,
+      fromVal: myFromEl ? myFromEl.value : '',
+      toVal: myToEl ? myToEl.value : '',
+      presetDays: myGlobalPresetDays
+    };
+
+    if (myTimeWindowHistoryIndex_ >= 0) {
+      const myCurrent = myTimeWindowHistory_[myTimeWindowHistoryIndex_];
+      if (myCurrent && myCurrent.fromIso === myNewState.fromIso && myCurrent.toIso === myNewState.toIso) {
+        return;
+      }
+    }
+
+    myTimeWindowHistory_.splice(myTimeWindowHistoryIndex_ + 1);
+    myTimeWindowHistory_.push(myNewState);
+    if (myTimeWindowHistory_.length > MY_TIME_WINDOW_HISTORY_MAX) {
+      myTimeWindowHistory_.shift();
+    }
+    myTimeWindowHistoryIndex_ = myTimeWindowHistory_.length - 1;
+    myUpdateTimeHistoryButtons_();
+  }
+
+  /**
+   * Undo to previous time window state.
+   */
+  function myUndoTimeWindow() {
+    if (myTimeWindowHistoryIndex_ <= 0) return;
+    myTimeWindowHistoryIndex_--;
+    myApplyHistoryState_(myTimeWindowHistory_[myTimeWindowHistoryIndex_]);
+    myUpdateTimeHistoryButtons_();
+  }
+
+  /**
+   * Redo to next time window state.
+   */
+  function myRedoTimeWindow() {
+    if (myTimeWindowHistoryIndex_ >= myTimeWindowHistory_.length - 1) return;
+    myTimeWindowHistoryIndex_++;
+    myApplyHistoryState_(myTimeWindowHistory_[myTimeWindowHistoryIndex_]);
+    myUpdateTimeHistoryButtons_();
+  }
+
+  /**
+   * Apply time window state from history stack.
+   * @param {Object} myState - Historic time window snapshot.
+   */
+  function myApplyHistoryState_(myState) {
+    if (!myState) return;
+    myIsNavigatingHistory_ = true;
+    try {
+      myGlobalFromIso = myState.fromIso;
+      myGlobalToIso = myState.toIso;
+      myGlobalPresetDays = myState.presetDays;
+
+      const myFromEl = document.getElementById('myInputTimeFrom');
+      const myToEl = document.getElementById('myInputTimeTo');
+      const myFromVal = myState.fromIso ? myToDatetimeInputValue(new Date(myState.fromIso)) : myState.fromVal;
+      const myToVal = myState.toIso ? myToDatetimeInputValue(new Date(myState.toIso)) : myState.toVal;
+      if (myFromEl) myFromEl.value = myFromVal;
+      if (myToEl) myToEl.value = myToVal;
+
+      myAppliedFromInputValue_ = myFromVal;
+      myAppliedToInputValue_ = myToVal;
+
+      myHighlightPresetBtn_(myState.presetDays);
+      myUpdateTimeWindowInputBounds_();
+      myCheckTimeWindowDirtyState_();
+
+      mySaveViewState_();
+      myLoadDashboard(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
+    } finally {
+      myIsNavigatingHistory_ = false;
+    }
+  }
+</script>

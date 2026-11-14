@@ -1,0 +1,176 @@
+<script>
+  /**
+   * Interactive drag-to-zoom range selector for the Overview timeline charts.
+   *
+   * What happens in this file:
+   * - Tracks frozen chart selections and performs edge hit-testing (8px threshold) so users can
+   *   resize either boundary handle before confirming.
+   * - Positions and toggles the floating confirmation badge inside the selected plot area, and
+   *   clears the active selection on Escape, filter reset, or zoom commit.
+   * - Translates chosen start/end bucket indices back into `dd.MM.yyyy HH:mm` range bounds and
+   *   applies the zoomed window globally.
+   */
+
+  /**
+   * Determine whether horizontal coordinate hits an active selection edge.
+   * @param {Object} myDrag - Selection state.
+   * @param {number} myX - Pointer X coordinate.
+   * @param {number} [myThreshold=8] - Hit test distance tolerance in px.
+   * @return {'left'|'right'|null} Hit edge identifier or null.
+   */
+  function myGetChartSelectionEdge_(myDrag, myX, myThreshold = 8) {
+    if (!myDrag || !myDrag.isFrozen) return null;
+    const myMinX = Math.min(myDrag.startX, myDrag.currentX);
+    const myMaxX = Math.max(myDrag.startX, myDrag.currentX);
+    if (Math.abs(myX - myMinX) <= myThreshold) return 'left';
+    if (Math.abs(myX - myMaxX) <= myThreshold) return 'right';
+    return null;
+  }
+
+  /**
+   * Remove any range badge buttons from DOM.
+   */
+  function myRemoveChartRangeBadgeButtons_() {
+    document.querySelectorAll('.my-chart-range-badge').forEach(function (myEl) {
+      myEl.remove();
+    });
+  }
+
+  /**
+   * Dismiss active drag selection and restore cursor.
+   * @param {Object} [myTargetChart] - Optional chart to dismiss.
+   */
+  function myDismissChartDragSelection_(myTargetChart) {
+    const myCharts = myTargetChart ? [myTargetChart] : [myDailyQuotaChartInstance, myPeakDurationChartInstance];
+    myCharts.forEach(function (myInst) {
+      if (!myInst) return;
+      if (myInst.canvas) {
+        myInst.canvas.style.cursor = 'crosshair';
+      }
+      if (myInst._myDragSelection) {
+        myInst._myDragSelection = null;
+        myInst.render();
+      }
+    });
+    myRemoveChartRangeBadgeButtons_();
+  }
+
+  /**
+   * Render interactive range badge button on top of frozen selection.
+   * @param {HTMLCanvasElement} myCanvas - Chart canvas element.
+   * @param {Object} myChart - Chart.js instance.
+   * @param {number} myStartIdx - Start bucket index.
+   * @param {number} myEndIdx - End bucket index.
+   */
+  function myShowChartRangeBadgeButton_(myCanvas, myChart, myStartIdx, myEndIdx) {
+    const myWrapper = myCanvas.parentElement;
+    if (!myWrapper) return;
+
+    myRemoveChartRangeBadgeButtons_();
+
+    const myDrag = myChart._myDragSelection;
+    if (!myDrag) return;
+
+    const myArea = myChart.chartArea;
+    const myXScale = myChart.scales.x;
+    const myLeft = myXScale.getPixelForValue(myStartIdx);
+    const myRight = myXScale.getPixelForValue(myEndIdx);
+    const myWidth = myRight - myLeft;
+
+    const myLabelsList = myChart.data.labels || [];
+    const myText = (myLabelsList[myStartIdx] || '') + ' → ' + (myLabelsList[myEndIdx] || '') + '  ↵';
+
+    const myBtn = document.createElement('button');
+    myBtn.type = 'button';
+    myBtn.className = 'my-chart-range-badge';
+    myBtn.title = 'Kliknij lub wciśnij Enter, aby zastosować zakres';
+    myBtn.innerText = myText;
+
+    const myCanvasWidth = myCanvas.offsetWidth || myArea.right;
+    const myCenterX = myLeft + myWidth / 2;
+    const myClampedLeft = Math.max(90, Math.min(myCanvasWidth - 90, myCenterX));
+    myBtn.style.left = myClampedLeft + 'px';
+    myBtn.style.top = (myArea.top + 8) + 'px';
+
+    myBtn.addEventListener('pointerdown', function (myEvt) {
+      myEvt.stopPropagation();
+    });
+
+    myBtn.addEventListener('click', function (myEvt) {
+      myEvt.stopPropagation();
+      myCommitActiveChartSelection_(myChart);
+    });
+
+    myWrapper.appendChild(myBtn);
+  }
+
+  /**
+   * Commit active chart selection and apply corresponding time window.
+   * @param {Object} [myTargetChart] - Optional chart instance.
+   * @return {boolean} True if active selection was committed.
+   */
+  function myCommitActiveChartSelection_(myTargetChart) {
+    const myCharts = myTargetChart ? [myTargetChart] : [myDailyQuotaChartInstance, myPeakDurationChartInstance];
+    for (let myI = 0; myI < myCharts.length; myI++) {
+      const myInst = myCharts[myI];
+      if (myInst && myInst._myDragSelection && myInst._myDragSelection.isFrozen) {
+        const myDrag = myInst._myDragSelection;
+        const myLabelsList = myInst.data.labels || [];
+        const myStartIdx = myDrag.startIdx;
+        const myEndIdx = myDrag.endIdx;
+        myDismissChartDragSelection_(myInst);
+        myApplyTimeWindowFromChartIndices_(myLabelsList, myStartIdx, myEndIdx);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Parse bucket label string into local Date instance.
+   * @param {string} myKey - Bucket label key.
+   * @return {Date} Date instance.
+   */
+  function myParseBucketKeyToDate_(myKey) {
+    if (!myKey) return new Date();
+    if (myKey.length === 10) {
+      return new Date(myKey + 'T00:00:00');
+    }
+    return new Date(myKey.replace(' ', 'T') + ':00');
+  }
+
+  /**
+   * Apply global time window from chart drag selection indices.
+   * @param {Array<string>} myLabels - Chart x-axis label keys.
+   * @param {number} myStartIdx - Start bucket index.
+   * @param {number} myEndIdx - End bucket index.
+   */
+  function myApplyTimeWindowFromChartIndices_(myLabels, myStartIdx, myEndIdx) {
+    if (!myLabels || myLabels.length === 0) return;
+    const myStartBucket = myLabels[myStartIdx];
+    const myEndBucket = myLabels[myEndIdx];
+    if (!myStartBucket || !myEndBucket) return;
+
+    const myStartDate = myParseBucketKeyToDate_(myStartBucket);
+    let myEndDate = myParseBucketKeyToDate_(myEndBucket);
+
+    if (myEndBucket.length === 10) {
+      myEndDate.setHours(23, 59, 59, 999);
+    } else {
+      const myStepMs = myEffectiveChartStepMs_ || myGetClientBucketStepMs_(myGlobalResolution || '1h');
+      myEndDate = new Date(myEndDate.getTime() + myStepMs - 1000);
+    }
+
+    const myNow = new Date();
+    if (myEndDate.getTime() > myNow.getTime()) {
+      myEndDate = myNow;
+    }
+
+    const myFromEl = document.getElementById('myInputTimeFrom');
+    const myToEl = document.getElementById('myInputTimeTo');
+    if (myFromEl) myFromEl.value = myToDatetimeInputValue(myStartDate);
+    if (myToEl) myToEl.value = myToDatetimeInputValue(myEndDate);
+
+    myApplyTimeWindow();
+  }
+</script>

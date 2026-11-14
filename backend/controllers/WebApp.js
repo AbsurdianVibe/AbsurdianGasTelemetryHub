@@ -1,5 +1,10 @@
 /**
- * Web application serving entry point.
+ * Google Apps Script WebApp HTTP entry point and template partial loader.
+ *
+ * Validates that the visitor matches the script owner (returning `403 Forbidden` otherwise),
+ * evaluates the main `frontend/index` HTML template with viewport and framing settings, and
+ * provides the `myInclude` template helper used inside HTML files to inline styles and modular
+ * client `<script>` partials from cloud subdirectories.
  */
 
 /**
@@ -15,7 +20,7 @@ function doGet(e) {
       .setTitle('403 Forbidden');
   }
 
-  const myTemplate = HtmlService.createTemplateFromFile('index');
+  const myTemplate = HtmlService.createTemplateFromFile('frontend/index');
   return myTemplate.evaluate()
     .setTitle('Absurdian Telemetry Hub')
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)

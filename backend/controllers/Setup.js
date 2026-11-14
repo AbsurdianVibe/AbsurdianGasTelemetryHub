@@ -1,5 +1,9 @@
 /**
- * Idempotent initialization and trigger setup script.
+ * Idempotent project initialization and daily trigger setup script.
+ *
+ * Intended to be executed once manually after deploying the script: initializes the backing
+ * telemetry spreadsheet and default settings, replaces any existing collector time triggers
+ * with a clean daily 02:00 schedule in the project timezone, and triggers an initial sync pass.
  */
 
 /**

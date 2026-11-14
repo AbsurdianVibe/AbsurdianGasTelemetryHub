@@ -1,0 +1,546 @@
+<script>
+  /**
+   * Client-side in-memory telemetry aggregator and resolution bar controller.
+   *
+   * What happens in this file:
+   * - Filters the locally cached process rows to the active global time window without extra
+   *   server round-trips, keeping pan and zoom interactions fast.
+   * - Computes bucket granularity dynamically (`auto` or `max` high-detail mode) while staying
+   *   under a 1000-bucket safety cap so charts do not freeze the browser.
+   * - Pre-fills empty timeline slots, calculates daily cumulative trigger quota per project
+   *   (seeding the first visible day with earlier same-day runs), and tracks peak runtimes.
+   * - Builds per-function KPI statistics (`min`, `max`, `avg`, `p95`) and updates resolution pill UI states.
+   */
+
+  const MY_MAX_CONTINUOUS_BUCKETS = 1000;
+  let myEffectiveChartStepMs_ = 3600000;
+
+  const MY_DYNAMIC_RESOLUTION_LABELS = Object.freeze({
+    auto: 'Auto',
+    max: 'Max'
+  });
+
+  /**
+   * Highlight active resolution button and refresh >1000 bucket constraints.
+   * @param {string} myResKey - Resolution key.
+   */
+  function myHighlightResolutionBtn_(myResKey) {
+    myUpdateResolutionButtonsState_(myGlobalFromIso, myGlobalToIso, myResKey);
+  }
+
+  /**
+   * Set dynamic or manual resolution and refresh views.
+   * @param {string} myResKey - Target resolution (auto, max, 1d, 1h, 30m, 15m, 5m, 1m).
+   */
+  function mySetResolution(myResKey) {
+    const myTargetRes = myResKey || 'auto';
+    if (!myIsClientResolutionAllowed_(myTargetRes, myGlobalFromIso, myGlobalToIso)) return;
+    myGlobalResolution = myTargetRes;
+    myUpdateResolutionButtonsState_(myGlobalFromIso, myGlobalToIso);
+    mySaveViewState_();
+    myRenderFromLocalCache_(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
+  }
+
+  /**
+   * Calculate percentile from array of numbers.
+   * @param {Array<number>} myNumbers - List of numbers.
+   * @param {number} myPercentile - Target percentile.
+   * @return {number} Percentile value.
+   */
+  function myClientCalculatePercentile_(myNumbers, myPercentile) {
+    if (!myNumbers || myNumbers.length === 0) return 0;
+    const mySorted = myNumbers.slice().sort(function (a, b) { return a - b; });
+    const myIndex = Math.ceil((myPercentile / 100) * mySorted.length) - 1;
+    return Number(mySorted[Math.max(0, myIndex)].toFixed(2));
+  }
+
+  /**
+   * Resolve auto resolution for client duration.
+   * @param {string} myFromIso - Start ISO.
+   * @param {string} myToIso - End ISO.
+   * @return {string} Resolution code.
+   */
+  function myResolveClientAutoResolution_(myFromIso, myToIso) {
+    const myFromMs = myFromIso ? new Date(myFromIso).getTime() : 0;
+    const myToMs = myToIso ? new Date(myToIso).getTime() : Date.now();
+    const myDiffHours = Math.max(0, (myToMs - myFromMs) / 3600000);
+    if (myDiffHours > 336) return '1d';
+    if (myDiffHours > 72) return '1h';
+    if (myDiffHours > 24) return '30m';
+    if (myDiffHours > 6) return '15m';
+    if (myDiffHours > 2) return '5m';
+    return '1m';
+  }
+
+  /**
+   * Parse time range bounds into millisecond timestamps.
+   * @param {string} myFromIso - Start ISO timestamp.
+   * @param {string} myToIso - End ISO timestamp.
+   * @return {Object} Start and end millisecond bounds.
+   */
+  function myParseClientRangeMs_(myFromIso, myToIso) {
+    const myStartMs = myFromIso ? new Date(myFromIso).getTime() : 0;
+    const myEndMs = myToIso ? new Date(myToIso).getTime() : Date.now();
+    return {
+      startMs: isNaN(myStartMs) ? 0 : myStartMs,
+      endMs: isNaN(myEndMs) ? Date.now() : myEndMs
+    };
+  }
+
+  /**
+   * Get bucket step in milliseconds.
+   * @param {string} myResolution - Resolution code or dynamic minute string.
+   * @return {number} Milliseconds.
+   */
+  function myGetClientBucketStepMs_(myResolution) {
+    if (myResolution === '1d') return 86400000;
+    if (myResolution === '1h') return 3600000;
+    if (myResolution && myResolution.endsWith('m')) {
+      const myMins = parseInt(myResolution, 10);
+      if (!isNaN(myMins) && myMins > 0) return myMins * 60000;
+    }
+    return 60000;
+  }
+
+  /**
+   * Count bucket intervals in time range for given fixed resolution.
+   * @param {string} myFromIso - Start ISO timestamp.
+   * @param {string} myToIso - End ISO timestamp.
+   * @param {string} myResolution - Target resolution code.
+   * @return {number} Estimated bucket interval count.
+   */
+  function myEstimateClientBucketSteps_(myFromIso, myToIso, myResolution) {
+    const myRange = myParseClientRangeMs_(myFromIso, myToIso);
+    if (!myFromIso || myRange.endMs <= myRange.startMs) return 0;
+    return Math.floor((myRange.endMs - myRange.startMs) / myGetClientBucketStepMs_(myResolution));
+  }
+
+  /**
+   * Check whether resolution fits MY_MAX_CONTINUOUS_BUCKETS cap in given window.
+   * @param {string} myResKey - Resolution key (auto, max, 1d, 1h, 30m, 15m, 5m, 1m).
+   * @param {string} myFromIso - Start ISO timestamp.
+   * @param {string} myToIso - End ISO timestamp.
+   * @return {boolean} True when resolution is permitted.
+   */
+  function myIsClientResolutionAllowed_(myResKey, myFromIso, myToIso) {
+    if (!myResKey || myResKey === 'auto' || myResKey === 'max') return true;
+    return myEstimateClientBucketSteps_(myFromIso, myToIso, myResKey) <= MY_MAX_CONTINUOUS_BUCKETS;
+  }
+
+  /**
+   * Resolve whole-minute step keeping bucket count within MY_MAX_CONTINUOUS_BUCKETS.
+   * @param {string} myFromIso - Start ISO timestamp.
+   * @param {string} myToIso - End ISO timestamp.
+   * @return {number} Minute step size (at least 1).
+   */
+  function myResolveClientMaxStepMinutes_(myFromIso, myToIso) {
+    const myRange = myParseClientRangeMs_(myFromIso, myToIso);
+    if (!myFromIso || myRange.endMs <= myRange.startMs) return 1;
+    return Math.max(1, Math.ceil(((myRange.endMs - myRange.startMs) / 60000) / MY_MAX_CONTINUOUS_BUCKETS));
+  }
+
+  /**
+   * Resolve effective client aggregation spec for auto, max, or fixed resolution.
+   * @param {string} myFromIso - Start ISO timestamp.
+   * @param {string} myToIso - End ISO timestamp.
+   * @param {string} [myRequestedResolution] - Requested resolution key.
+   * @return {Object} Effective aggregation descriptor.
+   */
+  function myResolveClientAggregationSpec_(myFromIso, myToIso, myRequestedResolution) {
+    const myRange = myParseClientRangeMs_(myFromIso, myToIso);
+    const myRes = myRequestedResolution || 'auto';
+
+    if (myRes === 'auto') {
+      const myAutoRes = myResolveClientAutoResolution_(myFromIso, myToIso);
+      return {
+        resolution: myAutoRes,
+        label: myAutoRes,
+        stepMs: myGetClientBucketStepMs_(myAutoRes),
+        originMs: myRange.startMs,
+        endMs: myRange.endMs,
+        hasRange: Boolean(myFromIso),
+        isDynamic: false
+      };
+    }
+
+    if (myRes === 'max' || myEstimateClientBucketSteps_(myFromIso, myToIso, myRes) > MY_MAX_CONTINUOUS_BUCKETS) {
+      const myStepMin = myResolveClientMaxStepMinutes_(myFromIso, myToIso);
+      return {
+        resolution: 'max',
+        label: myStepMin + 'm',
+        stepMs: myStepMin * 60000,
+        originMs: Math.floor(myRange.startMs / 60000) * 60000,
+        endMs: myRange.endMs,
+        hasRange: Boolean(myFromIso),
+        isDynamic: true
+      };
+    }
+
+    return {
+      resolution: myRes,
+      label: myRes,
+      stepMs: myGetClientBucketStepMs_(myRes),
+      originMs: myRange.startMs,
+      endMs: myRange.endMs,
+      hasRange: Boolean(myFromIso),
+      isDynamic: false
+    };
+  }
+
+  /**
+   * Build tooltip text describing resolution button limit or Max granularity.
+   * @param {string} myResKey - Resolution key.
+   * @param {boolean} myIsAllowed - Whether resolution fits bucket budget.
+   * @param {string} myFromIso - Start ISO timestamp.
+   * @param {string} myToIso - End ISO timestamp.
+   * @return {string} Tooltip text or empty string.
+   */
+  function myBuildResolutionTooltip_(myResKey, myIsAllowed, myFromIso, myToIso) {
+    if (myResKey === 'max') {
+      return 'Maksymalna rozdzielczość (~' + MY_MAX_CONTINUOUS_BUCKETS + ' punktów; obecnie ' +
+        myResolveClientMaxStepMinutes_(myFromIso, myToIso) + 'm)';
+    }
+    if (myIsAllowed) return '';
+    return 'Przekracza limit ' + MY_MAX_CONTINUOUS_BUCKETS + ' punktów (' +
+      myEstimateClientBucketSteps_(myFromIso, myToIso, myResKey) + ' pkt) — wykres używa trybu Max';
+  }
+
+  /**
+   * Format dynamic button label with resolved granularity for Auto and Max buttons.
+   * @param {string} myResKey - Resolution key.
+   * @param {string} myFromIso - Start ISO timestamp.
+   * @param {string} myToIso - End ISO timestamp.
+   * @return {string|null} Formatted button label or null for fixed buttons.
+   */
+  function myFormatResolutionButtonLabel_(myResKey, myFromIso, myToIso) {
+    const myBaseLabel = MY_DYNAMIC_RESOLUTION_LABELS[myResKey];
+    if (!myBaseLabel) return null;
+
+    const myRange = myParseClientRangeMs_(myFromIso, myToIso);
+    if (!myFromIso || myRange.endMs <= myRange.startMs) return myBaseLabel;
+    return myBaseLabel + ' (' + myResolveClientAggregationSpec_(myFromIso, myToIso, myResKey).label + ')';
+  }
+
+  /**
+   * Sync visibility, dynamic Auto/Max labels, disabled state, and active pill highlight on resolution bar.
+   * @param {string} myFromIso - Applied window start ISO timestamp.
+   * @param {string} myToIso - Applied window end ISO timestamp.
+   * @param {string} [myOverrideSelected] - Optional selected key override.
+   */
+  function myUpdateResolutionButtonsState_(myFromIso, myToIso, myOverrideSelected) {
+    const mySelectedKey = myOverrideSelected || myGlobalResolution || 'auto';
+    document.querySelectorAll('.my-res-btn').forEach(function (myBtn) {
+      const myResKey = myBtn.dataset.res || myBtn.id.replace('myResBtn', '').toLowerCase();
+      const myIsAllowed = myIsClientResolutionAllowed_(myResKey, myFromIso, myToIso);
+      const myIsSelected = myResKey === mySelectedKey;
+      const myBtnLabel = myFormatResolutionButtonLabel_(myResKey, myFromIso, myToIso);
+      if (myBtnLabel) {
+        myBtn.innerText = myBtnLabel;
+      }
+      myBtn.classList.toggle('my-res-hidden', !myIsAllowed && !myIsSelected);
+      myBtn.disabled = !myIsAllowed;
+      myBtn.classList.toggle('my-active-preset', myIsSelected);
+      myBtn.title = myBuildResolutionTooltip_(myResKey, myIsAllowed, myFromIso, myToIso);
+    });
+  }
+
+  /**
+   * Format date into fixed-calendar or origin-anchored dynamic bucket key.
+   * @param {Date|string|number} myDateVal - Date value.
+   * @param {string|Object} myResolutionOrSpec - Resolution code or aggregation spec.
+   * @return {string} Bucket key string.
+   */
+  function myGetClientBucketKey_(myDateVal, myResolutionOrSpec) {
+    const myDate = new Date(myDateVal);
+    if (isNaN(myDate.getTime())) return '';
+
+    if (myResolutionOrSpec && typeof myResolutionOrSpec === 'object' && myResolutionOrSpec.isDynamic) {
+      const myStepIdx = Math.max(0, Math.floor((myDate.getTime() - myResolutionOrSpec.originMs) / myResolutionOrSpec.stepMs));
+      const myBucketDate = new Date(myResolutionOrSpec.originMs + (myStepIdx * myResolutionOrSpec.stepMs));
+      return myBucketDate.getFullYear() + '-' + myPadZero2_(myBucketDate.getMonth() + 1) + '-' +
+        myPadZero2_(myBucketDate.getDate()) + ' ' + myPadZero2_(myBucketDate.getHours()) + ':' +
+        myPadZero2_(myBucketDate.getMinutes());
+    }
+
+    const myResolution = (myResolutionOrSpec && typeof myResolutionOrSpec === 'object') ? myResolutionOrSpec.resolution : myResolutionOrSpec;
+    const myYmd = myDate.getFullYear() + '-' + myPadZero2_(myDate.getMonth() + 1) + '-' + myPadZero2_(myDate.getDate());
+    if (myResolution === '1d') return myYmd;
+
+    const myH = myPadZero2_(myDate.getHours());
+    if (myResolution === '1h') return myYmd + ' ' + myH + ':00';
+
+    const myStep = myResolution === '30m' ? 30 : (myResolution === '15m' ? 15 : (myResolution === '5m' ? 5 : 1));
+    const myBucketM = Math.floor(myDate.getMinutes() / myStep) * myStep;
+    return myYmd + ' ' + myH + ':' + myPadZero2_(myBucketM);
+  }
+
+  /**
+   * Pre-fill empty continuous client buckets within MY_MAX_CONTINUOUS_BUCKETS cap.
+   * @param {Object} mySeriesBuckets - Mutable bucket lookup map.
+   * @param {Object} mySpec - Effective aggregation spec.
+   */
+  function myPrefillClientSeriesBuckets_(mySeriesBuckets, mySpec) {
+    if (!mySpec.hasRange || mySpec.endMs < mySpec.originMs) return;
+    const myStepsCount = Math.floor((mySpec.endMs - mySpec.originMs) / mySpec.stepMs);
+    if (myStepsCount < 0 || myStepsCount > MY_MAX_CONTINUOUS_BUCKETS) return;
+
+    for (let myCurrMs = mySpec.originMs; myCurrMs <= mySpec.endMs; myCurrMs += mySpec.stepMs) {
+      const myFillKey = myGetClientBucketKey_(myCurrMs, mySpec);
+      if (myFillKey && !mySeriesBuckets[myFillKey]) {
+        mySeriesBuckets[myFillKey] = myCreateClientSeriesBucket_(myFillKey);
+      }
+    }
+  }
+
+  /**
+   * Initialize empty client series bucket.
+   * @param {string} myBucketKey - Bucket identifier.
+   * @return {Object} Empty series bucket.
+   */
+  function myCreateClientSeriesBucket_(myBucketKey) {
+    return {
+      bucketKey: myBucketKey,
+      triggerSec: 0,
+      totalSec: 0,
+      count: 0,
+      byProject: {},
+      byProjectMax: {},
+      byProjectMaxFn: {}
+    };
+  }
+
+  /**
+   * Clone client project duration map with values rounded to one decimal place.
+   * @param {Object} mySourceMap - Map of project name to duration seconds.
+   * @return {Object} Rounded project duration map.
+   */
+  function myRoundClientProjectMap_(mySourceMap) {
+    const myResult = {};
+    Object.keys(mySourceMap).forEach(function (myKey) {
+      myResult[myKey] = Number(mySourceMap[myKey].toFixed(1));
+    });
+    return myResult;
+  }
+
+  /**
+   * Sum numeric values inside a client project duration map.
+   * @param {Object} mySourceMap - Map of project name to duration seconds.
+   * @return {number} Total seconds across all entries.
+   */
+  function mySumClientProjectValues_(mySourceMap) {
+    let mySum = 0;
+    Object.keys(mySourceMap).forEach(function (myKey) {
+      mySum += mySourceMap[myKey] || 0;
+    });
+    return mySum;
+  }
+
+  /**
+   * Populate daily cumulative trigger quota totals and per-project maps on client buckets.
+   * @param {Array<Object>} mySeriesList - Sorted time-series buckets.
+   * @param {number} myQuotaLimitSec - Daily quota limit in seconds.
+   * @param {string} [mySeedDayKey] - Calendar day key (YYYY-MM-DD) eligible for pre-window seed.
+   * @param {Object} [mySeedByProject] - Pre-window trigger durations collected before myFromIso.
+   */
+  function myAppendClientCumulativeQuota_(mySeriesList, myQuotaLimitSec, mySeedDayKey, mySeedByProject) {
+    let myCurrentDay = '';
+    let myRunningTotal = 0;
+    let myRunningByProject = {};
+
+    mySeriesList.forEach(function (myItem) {
+      const myDay = (myItem.bucketKey || '').slice(0, 10);
+      if (myDay !== myCurrentDay) {
+        myCurrentDay = myDay;
+        myRunningByProject = (mySeedDayKey && myDay === mySeedDayKey && mySeedByProject)
+          ? Object.assign({}, mySeedByProject)
+          : {};
+        myRunningTotal = mySumClientProjectValues_(myRunningByProject);
+      }
+      myRunningTotal += myItem.triggerSec || 0;
+
+      const myProjMap = myItem.byProject || {};
+      Object.keys(myProjMap).forEach(function (myProjName) {
+        myRunningByProject[myProjName] = (myRunningByProject[myProjName] || 0) + myProjMap[myProjName];
+      });
+
+      myItem.cumulativeTriggerSec = Number(myRunningTotal.toFixed(1));
+      myItem.cumulativePercentUsed = myQuotaLimitSec > 0
+        ? Number(((myRunningTotal / myQuotaLimitSec) * 100).toFixed(1))
+        : 0;
+      myItem.byProjectCumulative = myRoundClientProjectMap_(myRunningByProject);
+    });
+  }
+
+  /**
+   * In-memory aggregation engine running in browser RAM.
+   * @param {Array<Object>} myProcesses - Cached processes.
+   * @param {string} myFromIso - Start ISO.
+   * @param {string} myToIso - End ISO.
+   * @param {string} myRequestedResolution - Resolution code.
+   * @return {Object} Aggregated DTO identical to backend format.
+   */
+  function myAggregateClientDataset_(myProcesses, myFromIso, myToIso, myRequestedResolution) {
+    const myProjects = {};
+    const mySeriesBuckets = {};
+    let myTotalDurationSec = 0;
+    let myTotalFailures = 0;
+    let myLastFullDayQuotaSec = 0;
+
+    const myPad = function (n) { return n < 10 ? '0' + n : '' + n; };
+    const myToYmd = function (myD) {
+      return myD.getFullYear() + '-' + myPad(myD.getMonth() + 1) + '-' + myPad(myD.getDate());
+    };
+    const myLastFullDayKey = myToYmd(new Date(Date.now() - 86400000));
+
+    const mySpec = myResolveClientAggregationSpec_(myFromIso, myToIso, myRequestedResolution);
+    const myEffectiveResolution = mySpec.label;
+
+    const myFromMs = myFromIso ? new Date(myFromIso).getTime() : 0;
+    const myToMs = myToIso ? new Date(myToIso).getTime() : Infinity;
+    const myFirstDayKey = (myFromIso && !isNaN(myFromMs)) ? myToYmd(new Date(myFromMs)) : '';
+    const mySeedByProject = {};
+
+    myPrefillClientSeriesBuckets_(mySeriesBuckets, mySpec);
+
+    let myFilteredCount = 0;
+    myProcesses.forEach(function (myRow) {
+      const myRowTimeMs = new Date(myRow.startTime).getTime();
+      const myIsFail = myRow.processStatus === 'FAILED' || myRow.processStatus === 'TIMED_OUT';
+      const myIsQuotaType = myRow.processType === 'TIME_DRIVEN' || myRow.processType === 'TRIGGER';
+
+      const myRowDay = myToYmd(new Date(myRow.startTime));
+      if (myRowDay === myLastFullDayKey && myIsQuotaType) {
+        myLastFullDayQuotaSec += myRow.durationSec;
+      }
+
+      if (myFirstDayKey && myRowDay === myFirstDayKey && myRowTimeMs < myFromMs && myIsQuotaType && myRow.durationSec > 0) {
+        mySeedByProject[myRow.projectName] = (mySeedByProject[myRow.projectName] || 0) + myRow.durationSec;
+      }
+
+      if (myRowTimeMs < myFromMs || myRowTimeMs > myToMs) return;
+
+      myFilteredCount++;
+      myTotalDurationSec += myRow.durationSec;
+      if (myIsFail) myTotalFailures++;
+
+      // 1. Time-series bucket accumulation
+      const myBucketKey = myGetClientBucketKey_(myRow.startTime, mySpec);
+      if (myBucketKey) {
+        if (!mySeriesBuckets[myBucketKey]) {
+          mySeriesBuckets[myBucketKey] = myCreateClientSeriesBucket_(myBucketKey);
+        }
+        mySeriesBuckets[myBucketKey].totalSec += myRow.durationSec;
+        mySeriesBuckets[myBucketKey].count++;
+        const myPrevMax = mySeriesBuckets[myBucketKey].byProjectMax[myRow.projectName] || 0;
+        if (myRow.durationSec >= myPrevMax) {
+          mySeriesBuckets[myBucketKey].byProjectMax[myRow.projectName] = myRow.durationSec;
+          mySeriesBuckets[myBucketKey].byProjectMaxFn[myRow.projectName] = myRow.functionName;
+        }
+        if (myIsQuotaType) {
+          mySeriesBuckets[myBucketKey].triggerSec += myRow.durationSec;
+          mySeriesBuckets[myBucketKey].byProject[myRow.projectName] =
+            (mySeriesBuckets[myBucketKey].byProject[myRow.projectName] || 0) + myRow.durationSec;
+        }
+      }
+
+      // 2. Project & function breakdown
+      if (!myProjects[myRow.projectName]) {
+        myProjects[myRow.projectName] = {
+          projectName: myRow.projectName,
+          totalSec: 0,
+          count: 0,
+          failCount: 0,
+          functions: {}
+        };
+      }
+      const myProj = myProjects[myRow.projectName];
+      myProj.totalSec += myRow.durationSec;
+      myProj.count++;
+      if (myIsFail) myProj.failCount++;
+
+      if (!myProj.functions[myRow.functionName]) {
+        myProj.functions[myRow.functionName] = {
+          functionName: myRow.functionName,
+          totalSec: 0,
+          count: 0,
+          minSec: Infinity,
+          maxSec: 0,
+          durations: [],
+          statuses: {}
+        };
+      }
+      const myFn = myProj.functions[myRow.functionName];
+      myFn.totalSec += myRow.durationSec;
+      myFn.count++;
+      myFn.minSec = Math.min(myFn.minSec, myRow.durationSec);
+      myFn.maxSec = Math.max(myFn.maxSec, myRow.durationSec);
+      myFn.durations.push(myRow.durationSec);
+      myFn.statuses[myRow.processStatus] = (myFn.statuses[myRow.processStatus] || 0) + 1;
+    });
+
+    const myQuotaLimitSec = (mySettings_ && mySettings_.quotaLimitSec) ? mySettings_.quotaLimitSec : 5400;
+
+    const myProjectsList = Object.keys(myProjects).map(function (myProjName) {
+      const myP = myProjects[myProjName];
+      const myFunctionsList = Object.keys(myP.functions).map(function (myFnName) {
+        const myF = myP.functions[myFnName];
+        return {
+          functionName: myF.functionName,
+          count: myF.count,
+          totalSec: Number(myF.totalSec.toFixed(2)),
+          avgSec: Number((myF.totalSec / myF.count).toFixed(2)),
+          minSec: myF.minSec === Infinity ? 0 : Number(myF.minSec.toFixed(2)),
+          maxSec: Number(myF.maxSec.toFixed(2)),
+          p95Sec: myClientCalculatePercentile_(myF.durations, 95),
+          statuses: myF.statuses
+        };
+      }).sort(function (a, b) { return b.totalSec - a.totalSec; });
+
+      return {
+        projectName: myP.projectName,
+        totalSec: Number(myP.totalSec.toFixed(2)),
+        count: myP.count,
+        failCount: myP.failCount,
+        functions: myFunctionsList
+      };
+    }).sort(function (a, b) { return b.totalSec - a.totalSec; });
+
+    const mySeriesList = Object.keys(mySeriesBuckets).sort().map(function (myK) {
+      const myItem = mySeriesBuckets[myK];
+      return {
+        dayKey: myItem.bucketKey,
+        bucketKey: myItem.bucketKey,
+        triggerSec: Number(myItem.triggerSec.toFixed(1)),
+        totalSec: Number(myItem.totalSec.toFixed(1)),
+        count: myItem.count,
+        percentUsed: Number(((myItem.triggerSec / myQuotaLimitSec) * 100).toFixed(1)),
+        byProject: myItem.byProject,
+        byProjectMax: myItem.byProjectMax,
+        byProjectMaxFn: myItem.byProjectMaxFn
+      };
+    });
+    myAppendClientCumulativeQuota_(mySeriesList, myQuotaLimitSec, myFirstDayKey, mySeedByProject);
+
+    const myLastFullDayQuotaPercent = Number(((myLastFullDayQuotaSec / myQuotaLimitSec) * 100).toFixed(1));
+
+    return {
+      summary: {
+        totalRuns: myFilteredCount,
+        totalDurationSec: Number(myTotalDurationSec.toFixed(1)),
+        totalFailures: myTotalFailures,
+        failureRate: myFilteredCount > 0 ? Number(((myTotalFailures / myFilteredCount) * 100).toFixed(1)) : 0,
+        todayQuotaSec: Number(myLastFullDayQuotaSec.toFixed(1)),
+        todayQuotaLimitSec: myQuotaLimitSec,
+        todayQuotaPercent: myLastFullDayQuotaPercent,
+        lastFullDayKey: myLastFullDayKey,
+        lastFullDayQuotaSec: Number(myLastFullDayQuotaSec.toFixed(1)),
+        lastFullDayQuotaPercent: myLastFullDayQuotaPercent
+      },
+      dailySeries: mySeriesList,
+      resolution: myRequestedResolution || 'auto',
+      effectiveResolution: myEffectiveResolution,
+      effectiveStepMs: mySpec.stepMs,
+      projects: myProjectsList
+    };
+  }
+</script>

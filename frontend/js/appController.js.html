@@ -1,0 +1,400 @@
+<script>
+  /**
+   * Top-level client application controller and startup orchestrator (must load last).
+   *
+   * What happens in this file:
+   * - Switches between Overview, Projects, and Settings tabs while persisting per-tab scroll position
+   *   and controlling time-window toolbar visibility.
+   * - Coordinates the multi-stage data lifecycle: instant `0 ms` render from local cache, throttled
+   *   background freshness checks with delta merges, cold initial bootstrap, and manual sync.
+   * - Restores keyboard focus inside the Apps Script iframe, wires global shortcuts (history, chart
+   *   selection, tab navigation, card scrolling), and bootstraps the UI on DOM ready.
+   */
+
+  const MY_NAV_TABS_LIST = ['overview', 'projects', 'settings'];
+
+  /**
+   * Switch active navigation tab and section.
+   * @param {string} myTabKey - Target tab key.
+   */
+  function mySwitchView(myTabKey) {
+    if (myActiveViewName && myActiveViewName !== myTabKey) {
+      myTabScrollPositions_[myActiveViewName] = window.scrollY;
+    }
+    myActiveViewName = myTabKey;
+    ['overview', 'projects', 'settings'].forEach(function (myKey) {
+      const myNavBtn = document.getElementById('myNavTab' + myKey.charAt(0).toUpperCase() + myKey.slice(1));
+      const myViewSec = document.getElementById('myView' + myKey.charAt(0).toUpperCase() + myKey.slice(1));
+      if (myKey === myTabKey) {
+        if (myNavBtn) myNavBtn.classList.add('my-active');
+        if (myViewSec) myViewSec.classList.add('my-active');
+      } else {
+        if (myNavBtn) myNavBtn.classList.remove('my-active');
+        if (myViewSec) myViewSec.classList.remove('my-active');
+      }
+    });
+
+    const myTimeBar = document.getElementById('myTimeWindowBar');
+    if (myTimeBar) {
+      myTimeBar.style.display = (myTabKey === 'settings') ? 'none' : 'flex';
+    }
+
+    const myResBar = document.getElementById('myTimeResolutionsBar');
+    if (myResBar) {
+      myResBar.style.display = (myTabKey === 'overview') ? 'flex' : 'none';
+    }
+
+    mySaveViewState_();
+
+    const myTargetScrollY = myTabScrollPositions_[myTabKey] || 0;
+    window.requestAnimationFrame(function () {
+      document.documentElement.style.scrollBehavior = 'auto';
+      window.scrollTo(0, myTargetScrollY);
+      window.requestAnimationFrame(function () {
+        document.documentElement.style.scrollBehavior = '';
+      });
+    });
+  }
+
+  /**
+   * Render dashboard views using local in-memory dataset in 0 ms.
+   * @param {string} myFromIso - Start ISO.
+   * @param {string} myToIso - End ISO.
+   * @param {string} [myResolution] - Target resolution.
+   */
+  function myRenderFromLocalCache_(myFromIso, myToIso, myResolution) {
+    const myTargetFromIso = myFromIso || myGlobalFromIso;
+    const myTargetToIso = myToIso || myGlobalToIso;
+    myUpdateResolutionButtonsState_(myTargetFromIso, myTargetToIso);
+
+    const myAggregated = myAggregateClientDataset_(
+      myCachedProcesses_,
+      myTargetFromIso,
+      myTargetToIso,
+      myResolution || myGlobalResolution
+    );
+    myEffectiveChartStepMs_ = myAggregated.effectiveStepMs || myGetClientBucketStepMs_(myAggregated.effectiveResolution);
+
+    const myChartTitle = document.getElementById('myChartSectionTitle');
+    if (myChartTitle) {
+      const myCumSuffix = myAggregated.effectiveResolution === '1d' ? '' : ' • narastająco 24h';
+      myChartTitle.innerText = 'Miks zużycia kwoty wyzwalaczy per projekt (ziarnistość: ' + myAggregated.effectiveResolution + myCumSuffix + ')';
+    }
+    const myPeakTitle = document.getElementById('myChartPeakDurationTitle');
+    if (myPeakTitle) {
+      myPeakTitle.innerText = 'Maksymalny czas pojedynczego wykonania per projekt (ziarnistość: ' + myAggregated.effectiveResolution + ')';
+    }
+
+    const myDailyQuotaLimitBadge = document.getElementById('myChartDailyQuotaLimitBadge');
+    if (myDailyQuotaLimitBadge) {
+      const myLimitSec = (myLoadedSettings_ && myLoadedSettings_.quotaLimitSec) || (mySettings_ && mySettings_.quotaLimitSec) || 5400;
+      const myLimitMin = Math.round(myLimitSec / 60);
+      myDailyQuotaLimitBadge.innerText = 'Limit GAS: ' + myLimitMin + 'm / doba (' + myLimitSec + 's)';
+    }
+
+    if (myAggregated.projects) {
+      myAggregated.projects.map(function (p) { return p.projectName; }).sort().forEach(function (pName) {
+        myGetProjectColor_(pName);
+      });
+    }
+
+    myRenderKpis(myAggregated.summary);
+    myRenderDailyChart(myAggregated.dailySeries);
+    myRenderPeakDurationChart(myAggregated.dailySeries);
+    myRenderProjectsTable(myAggregated.projects);
+
+    myUpdateSyncStatusDisplay_(myClientLastSync_);
+  }
+
+  /**
+   * Check telemetry freshness on backend, merge delta if available, and render in-memory.
+   * @param {string} myFromIso - Start ISO timestamp.
+   * @param {string} myToIso - End ISO timestamp.
+   * @param {string} [myResolution] - Target resolution.
+   */
+  async function myEnsureFreshnessAndRender_(myFromIso, myToIso, myResolution) {
+    const myTargetToMs = myToIso ? new Date(myToIso).getTime() : Date.now();
+    const myCachedMaxMs = myCachedMaxTime_ ? new Date(myCachedMaxTime_).getTime() : 0;
+    const myNow = Date.now();
+
+    const myTouchesPresent = myTargetToMs >= myCachedMaxMs;
+    const myShouldCheckFreshness = myTouchesPresent && (myNow - myLastFreshnessCheckMs_ > 60000);
+
+    if (myShouldCheckFreshness) {
+      try {
+        myLastFreshnessCheckMs_ = myNow;
+        const myFreshness = await myCallServer('myApiCheckTelemetryFreshness', myClientLastSync_);
+        if (myFreshness && myFreshness.isStale) {
+          const myDeltaRes = await myCallServer('myApiGetDeltaProcesses', myCachedMaxTime_);
+          if (myDeltaRes && myDeltaRes.delta && myDeltaRes.delta.length > 0) {
+            const myExistingKeys = {};
+            myCachedProcesses_.forEach(function (p) { myExistingKeys[p.key] = true; });
+            myDeltaRes.delta.forEach(function (p) {
+              if (!myExistingKeys[p.key]) {
+                myCachedProcesses_.push(p);
+                myExistingKeys[p.key] = true;
+              }
+            });
+            myUpdateCachedMaxTime_();
+            myClientLastSync_ = myDeltaRes.lastCollectionTime || myFreshness.serverLastSync;
+            mySaveProcessesToStorage_();
+          } else if (myFreshness.serverLastSync) {
+            myClientLastSync_ = myFreshness.serverLastSync;
+            mySaveProcessesToStorage_();
+          }
+        }
+      } catch (myErr) {
+        console.warn('Freshness check failed, rendering from memory:', myErr);
+      }
+    }
+
+    myRenderFromLocalCache_(myFromIso, myToIso, myResolution);
+  }
+
+  /**
+   * Bootstrap full initial dataset from server with visual loading overlay.
+   * @param {string} myFromIso - Target from ISO.
+   * @param {string} myToIso - Target to ISO.
+   * @param {string} [myResolution] - Target resolution.
+   */
+  async function myBootstrapInitialDataset_(myFromIso, myToIso, myResolution) {
+    myUpdateResolutionButtonsState_(myFromIso || myGlobalFromIso, myToIso || myGlobalToIso);
+    mySetDashboardLoadingState_(true, 'Pobieranie bazy procesów z arkusza...');
+    try {
+      const myRes = await myCallServer('myApiGetInitialDataset');
+      myCachedProcesses_ = myRes.processes || [];
+      if (myRes.settings) {
+        mySettings_ = myRes.settings;
+        myLoadedSettings_ = {
+          retentionDays: Number(mySettings_.retentionDays) || 30,
+          quotaLimitSec: Number(mySettings_.quotaLimitSec) || 5400
+        };
+        const myRetEl = document.getElementById('myInputRetention');
+        const myRetDisp = document.getElementById('myRetentionDisplay');
+        const myQuotaEl = document.getElementById('myInputQuota');
+        if (myRetEl) myRetEl.value = myLoadedSettings_.retentionDays;
+        if (myRetDisp) myRetDisp.innerText = myLoadedSettings_.retentionDays;
+        if (myQuotaEl) myQuotaEl.value = myLoadedSettings_.quotaLimitSec;
+        myUpdateTimeWindowInputBounds_();
+        myCheckSettingsDirtyState_();
+      }
+      myClientLastSync_ = myRes.lastCollectionTime || myRes.lastSync || '';
+      myUpdateCachedMaxTime_();
+      mySaveProcessesToStorage_();
+
+      if (myGlobalPresetDays === 'all') {
+        const myAllDays = (mySettings_ && mySettings_.retentionDays) ? mySettings_.retentionDays : 30;
+        const myNow = new Date();
+        const myStart = new Date();
+        myStart.setDate(myStart.getDate() - myAllDays);
+        myGlobalFromIso = myStart.toISOString();
+        myGlobalToIso = myNow.toISOString();
+        const myFromEl = document.getElementById('myInputTimeFrom');
+        const myToEl = document.getElementById('myInputTimeTo');
+        if (myFromEl) myFromEl.value = myToDatetimeInputValue(myStart);
+        if (myToEl) myToEl.value = myToDatetimeInputValue(myNow);
+        myAppliedFromInputValue_ = myFromEl ? myFromEl.value : '';
+        myAppliedToInputValue_ = myToEl ? myToEl.value : '';
+        myCheckTimeWindowDirtyState_();
+      }
+
+      myRenderFromLocalCache_(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
+    } catch (myErr) {
+      console.error('Error bootstrapping initial dataset:', myErr);
+      myUpdateSyncStatusDisplay_(null, 'Błąd pobierania: ' + myErr.message);
+    } finally {
+      mySetDashboardLoadingState_(false);
+    }
+  }
+
+  /**
+   * Load dashboard data. Uses local memory cache if present, otherwise bootstraps initial dataset.
+   * @param {string} myFromIso - Start ISO timestamp.
+   * @param {string} myToIso - End ISO timestamp.
+   * @param {string} [myResolution] - Resolution code.
+   */
+  async function myLoadDashboard(myFromIso, myToIso, myResolution) {
+    myUpdateResolutionButtonsState_(myFromIso || myGlobalFromIso, myToIso || myGlobalToIso);
+    if (myCachedProcesses_ && myCachedProcesses_.length > 0) {
+      await myEnsureFreshnessAndRender_(myFromIso, myToIso, myResolution);
+      return;
+    }
+    await myBootstrapInitialDataset_(myFromIso, myToIso, myResolution);
+  }
+
+  /**
+   * Trigger manual telemetry collection and refresh views.
+   */
+  async function myHandleManualSync() {
+    const myBtn = document.getElementById('myBtnSyncNow');
+    const mySpinnerText = document.getElementById('mySyncBtnText');
+
+    myBtn.disabled = true;
+    myBtn.classList.add('my-loading');
+    mySpinnerText.innerText = 'Pobieranie procesów...';
+
+    try {
+      const myRes = await myCallServer('myApiTriggerManualSync');
+      myCachedProcesses_ = myRes.processes || [];
+      if (myRes.settings) {
+        mySettings_ = myRes.settings;
+      }
+      myClientLastSync_ = myRes.lastCollectionTime || myRes.lastSync || '';
+      myUpdateCachedMaxTime_();
+      mySaveProcessesToStorage_();
+
+      myRenderFromLocalCache_(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
+    } catch (myErr) {
+      alert('Błąd synchronizacji: ' + myErr.message);
+    } finally {
+      myBtn.disabled = false;
+      myBtn.classList.remove('my-loading');
+      mySpinnerText.innerText = 'Synchronizuj teraz';
+    }
+  }
+
+  /**
+   * Ensure keyboard focus is captured by the application iframe.
+   */
+  function myEnsureWindowFocus_() {
+    try {
+      window.focus();
+      if (document.body) {
+        document.body.focus();
+      }
+    } catch (myErr) {
+      // Ignore cross-origin frame focus restrictions
+    }
+  }
+
+  /**
+   * Initialize custom keyboard navigation (PageUp/PageDown for cards, ArrowLeft/ArrowRight for tabs).
+   */
+  function myInitKeyboardNavigation_() {
+    const myKeyHandler = function (myEvent) {
+      const myActiveEl = document.activeElement;
+      if (myActiveEl && (
+        myActiveEl.tagName === 'INPUT' ||
+        myActiveEl.tagName === 'TEXTAREA' ||
+        myActiveEl.tagName === 'SELECT' ||
+        myActiveEl.isContentEditable
+      )) {
+        return;
+      }
+
+      if (myEvent.ctrlKey || myEvent.metaKey) {
+        if ((myEvent.key === 'z' || myEvent.key === 'Z') && !myEvent.shiftKey) {
+          myEvent.preventDefault();
+          myUndoTimeWindow();
+          return;
+        }
+        if ((myEvent.key === 'y' || myEvent.key === 'Y') || ((myEvent.key === 'z' || myEvent.key === 'Z') && myEvent.shiftKey)) {
+          myEvent.preventDefault();
+          myRedoTimeWindow();
+          return;
+        }
+      }
+
+      if (myEvent.key === 'Escape') {
+        myDismissChartDragSelection_();
+        return;
+      }
+
+      if (myEvent.key === 'Enter') {
+        if (myCommitActiveChartSelection_()) {
+          myEvent.preventDefault();
+          return;
+        }
+      }
+
+      const myAllowedKeys = ['PageDown', 'PageUp', 'ArrowLeft', 'ArrowRight'];
+      if (!myAllowedKeys.includes(myEvent.key)) return;
+
+      if (myEvent.key === 'ArrowRight' || myEvent.key === 'ArrowLeft') {
+        const myCurrentIdx = MY_NAV_TABS_LIST.indexOf(myActiveViewName);
+        if (myCurrentIdx === -1) return;
+        const myStep = (myEvent.key === 'ArrowRight') ? 1 : -1;
+        const myNextIdx = myCurrentIdx + myStep;
+        if (myNextIdx < 0 || myNextIdx >= MY_NAV_TABS_LIST.length) {
+          return;
+        }
+        myEvent.preventDefault();
+        mySwitchView(MY_NAV_TABS_LIST[myNextIdx]);
+        return;
+      }
+
+      const myActiveView = document.querySelector('.my-view.my-active');
+      if (!myActiveView) return;
+
+      const myCards = Array.from(myActiveView.querySelectorAll('.my-card')).filter(function (myCard) {
+        return myCard.offsetParent !== null;
+      });
+      if (myCards.length === 0) return;
+
+      const myThreshold = 35;
+
+      if (myEvent.key === 'PageDown') {
+        const myNextCard = myCards.find(function (myCard) {
+          return myCard.getBoundingClientRect().top > myThreshold;
+        });
+        if (myNextCard) {
+          myEvent.preventDefault();
+          myNextCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      } else if (myEvent.key === 'PageUp') {
+        const myPrevCards = myCards.filter(function (myCard) {
+          return myCard.getBoundingClientRect().top < -myThreshold;
+        });
+        myEvent.preventDefault();
+        if (myPrevCards.length > 0) {
+          const myPrevCard = myPrevCards[myPrevCards.length - 1];
+          myPrevCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        } else {
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+      }
+    };
+
+    window.addEventListener('keydown', myKeyHandler, true);
+  }
+
+  // Initial load
+  document.addEventListener('DOMContentLoaded', function () {
+    myRestoreProjectColors_();
+    myRestoreHiddenProjects_();
+    myInitDatetimeWheelScrubbing_();
+    myInitLimitLineToggles_();
+    myInitKeyboardNavigation_();
+    myEnsureWindowFocus_();
+
+    [100, 400, 1000].forEach(function (myDelay) {
+      setTimeout(myEnsureWindowFocus_, myDelay);
+    });
+
+    window.addEventListener('load', myEnsureWindowFocus_);
+    window.addEventListener('pointerenter', myEnsureWindowFocus_);
+    window.addEventListener('mousemove', function myFocusOnFirstMove_() {
+      myEnsureWindowFocus_();
+      window.removeEventListener('mousemove', myFocusOnFirstMove_);
+    });
+
+    const myHasCachedData = myRestoreProcessesFromStorage_();
+    const myHasRestoredView = myRestoreViewState_();
+    if (!myHasRestoredView) {
+      mySetTimeWindowPreset(30);
+    } else {
+      myRecordTimeWindowHistory_();
+    }
+    myUpdateTimeWindowInputBounds_();
+    myValidateAndClampInputs_();
+    if (myHasCachedData) {
+      myPruneClientExpiredRows_();
+      if (myCachedProcesses_.length > 0) {
+        myRenderFromLocalCache_(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
+        myEnsureFreshnessAndRender_(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
+        return;
+      }
+    }
+    myBootstrapInitialDataset_(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
+  });
+</script>

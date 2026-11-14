@@ -1,0 +1,239 @@
+<script>
+  /**
+   * DOM view renderers for Overview KPI cards, Projects & Functions tables, status UI, and Settings.
+   *
+   * What happens in this file:
+   * - Updates the four Overview KPI cards, highlighting the last completed calendar day's quota usage
+   *   with warning (>=70%) and danger (>=90%) visual states.
+   * - Renders per-project cards and sortable-look function statistics tables (`min`, `max`, `avg`, `p95`)
+   *   on the Projects & Functions tab.
+   * - Controls the fullscreen loading overlay, last-sync freshness indicator, and Settings form dirty
+   *   tracking, cancel revert, and server-side save flow.
+   */
+
+  /**
+   * Render KPI summary cards and progress bars.
+   * @param {Object} mySummary - Summary metrics object.
+   */
+  function myRenderKpis(mySummary) {
+    const myQuotaPct = (typeof mySummary.lastFullDayQuotaPercent !== 'undefined') ?
+      mySummary.lastFullDayQuotaPercent : (mySummary.todayQuotaPercent || 0);
+    const myQuotaSec = (typeof mySummary.lastFullDayQuotaSec !== 'undefined') ?
+      mySummary.lastFullDayQuotaSec : (mySummary.todayQuotaSec || 0);
+    const myDayKey = mySummary.lastFullDayKey || '';
+
+    const myQuotaBadge = document.getElementById('myKpiQuotaBadge');
+    const myQuotaVal = document.getElementById('myKpiQuotaVal');
+    const myQuotaBar = document.getElementById('myKpiQuotaBar');
+    const myQuotaSub = document.getElementById('myKpiQuotaSub');
+
+    myQuotaVal.innerText = myQuotaSec + 's (' + myQuotaPct + '%)';
+    myQuotaBadge.innerText = myQuotaPct + '%';
+    myQuotaBar.style.width = Math.min(100, myQuotaPct) + '%';
+    if (myQuotaSub && myDayKey) {
+      myQuotaSub.innerText = 'Doba ' + myDayKey + ' • Limit: ' + mySummary.todayQuotaLimitSec + 's (90 min)';
+    }
+
+    myQuotaBar.className = 'my-progress-fill';
+    myQuotaBadge.className = 'my-badge';
+    if (myQuotaPct >= 90) {
+      myQuotaBar.classList.add('my-crit');
+      myQuotaBadge.classList.add('my-badge-danger');
+    } else if (myQuotaPct >= 70) {
+      myQuotaBar.classList.add('my-warn');
+      myQuotaBadge.classList.add('my-badge-danger');
+    } else {
+      myQuotaBadge.classList.add('my-badge-success');
+    }
+
+    document.getElementById('myKpiTotalDurationVal').innerText = myFormatDurationClient(mySummary.totalDurationSec);
+    document.getElementById('myKpiTotalRunsVal').innerText = mySummary.totalRuns.toLocaleString();
+    document.getElementById('myKpiFailureRateVal').innerText = mySummary.failureRate + '%';
+    document.getElementById('myKpiFailureRateSub').innerText = mySummary.totalFailures + ' awarii / timeoutów';
+  }
+
+  /**
+   * Render projects cards and functions breakdown tables.
+   * @param {Array<Object>} myProjects - Projects list.
+   */
+  function myRenderProjectsTable(myProjects) {
+    const myContainer = document.getElementById('myProjectsContainer');
+    if (!myContainer) return;
+
+    if (!myProjects || myProjects.length === 0) {
+      myContainer.innerHTML = '<div class="my-card"><p style="text-align: center; color: var(--my-text-secondary); margin: 0;">Brak zarejestrowanych procesów w wybranym oknie.</p></div>';
+      return;
+    }
+
+    let myHtml = '';
+    myProjects.forEach(function (myProj) {
+      const myColor = myGetProjectColor_(myProj.projectName);
+      const myFailBadge = (myProj.failCount > 0) ?
+        '<span class="my-badge my-badge-danger">Awarie: <strong>' + myProj.failCount + '</strong></span>' :
+        '<span class="my-badge my-badge-success">0 awarii</span>';
+
+      let myRowsHtml = '';
+      myProj.functions.forEach(function (myFn) {
+        const myStatusPills = Object.keys(myFn.statuses).map(function (mySt) {
+          const myBadgeClass = (mySt === 'FAILED' || mySt === 'TIMED_OUT') ? 'my-badge-danger' : 'my-badge-success';
+          return '<span class="my-badge ' + myBadgeClass + '">' + mySt + ': ' + myFn.statuses[mySt] + '</span>';
+        }).join(' ');
+
+        myRowsHtml += '<tr>' +
+          '<td><code>' + myFn.functionName + '</code></td>' +
+          '<td>' + myFn.count.toLocaleString() + '</td>' +
+          '<td>' + myFormatDurationClient(myFn.totalSec) + '</td>' +
+          '<td>' + myFn.avgSec + 's</td>' +
+          '<td>' + myFn.minSec + 's</td>' +
+          '<td>' + myFn.maxSec + 's</td>' +
+          '<td>' + myFn.p95Sec + 's</td>' +
+          '<td>' + myStatusPills + '</td>' +
+          '</tr>';
+      });
+
+      myHtml += '<div class="my-card" style="margin-bottom: 24px;">' +
+        '<div class="my-project-card-header">' +
+        '<div class="my-project-card-title">' +
+        '<span class="my-project-color-dot" style="background: ' + myColor.border + '; box-shadow: 0 0 8px ' + myColor.border + ';"></span>' +
+        '<span>' + myProj.projectName + '</span>' +
+        '</div>' +
+        '<div class="my-project-card-metrics">' +
+        '<span class="my-badge my-badge-neutral">Wywołania: <strong>' + myProj.count.toLocaleString() + '</strong></span>' +
+        '<span class="my-badge my-badge-neutral">Czas łączny: <strong>' + myFormatDurationClient(myProj.totalSec) + '</strong></span>' +
+        myFailBadge +
+        '</div>' +
+        '</div>' +
+        '<div class="my-table-responsive">' +
+        '<table class="my-table">' +
+        '<thead>' +
+        '<tr>' +
+        '<th>Funkcja</th>' +
+        '<th>Wywołania</th>' +
+        '<th>Czas łączny</th>' +
+        '<th>Średni</th>' +
+        '<th>Min</th>' +
+        '<th>Max</th>' +
+        '<th>P95</th>' +
+        '<th>Statusy</th>' +
+        '</tr>' +
+        '</thead>' +
+        '<tbody>' +
+        myRowsHtml +
+        '</tbody>' +
+        '</table>' +
+        '</div>' +
+        '</div>';
+    });
+
+    myContainer.innerHTML = myHtml;
+  }
+
+  /**
+   * Toggle dashboard loading overlay.
+   * @param {boolean} myIsLoading - Loading state.
+   * @param {string} [myMessage] - Optional message.
+   */
+  function mySetDashboardLoadingState_(myIsLoading, myMessage) {
+    const myOverlay = document.getElementById('myDashboardLoadingOverlay');
+    const myText = document.getElementById('myDashboardLoadingText');
+    if (myText && myMessage) myText.innerText = myMessage;
+    if (myOverlay) {
+      if (myIsLoading) myOverlay.classList.add('my-active');
+      else myOverlay.classList.remove('my-active');
+    }
+  }
+
+  /**
+   * Update sync status display below manual sync button.
+   * @param {string} [myTimestampIso] - ISO timestamp of last sync.
+   * @param {string} [myErrorMessage] - Optional error message to display.
+   */
+  function myUpdateSyncStatusDisplay_(myTimestampIso, myErrorMessage) {
+    const myStatusEl = document.getElementById('mySyncStatus');
+    if (!myStatusEl) return;
+    if (myErrorMessage) {
+      myStatusEl.innerHTML = 'Ostatnia synchronizacja:<br><span style="color: var(--my-danger);">' + myErrorMessage + '</span>';
+      return;
+    }
+    if (myTimestampIso) {
+      const myDateStr = new Date(myTimestampIso).toLocaleString('pl-PL');
+      myStatusEl.innerHTML = 'Ostatnia synchronizacja:<br><span>' + myDateStr + '</span>';
+      return;
+    }
+    myStatusEl.innerHTML = 'Ostatnia synchronizacja:<br><span style="color: var(--my-text-muted);">Brak danych</span>';
+  }
+
+  /**
+   * Check dirty state for configuration settings inputs.
+   */
+  function myCheckSettingsDirtyState_() {
+    const myRetentionEl = document.getElementById('myInputRetention');
+    const myQuotaEl = document.getElementById('myInputQuota');
+    const mySaveBtn = document.getElementById('myBtnSaveSettings');
+    const myCancelBtn = document.getElementById('myBtnCancelSettings');
+    if (!myRetentionEl || !myQuotaEl || !mySaveBtn) return;
+
+    const myCurrentRetention = Number(myRetentionEl.value);
+    const myCurrentQuota = Number(myQuotaEl.value);
+
+    const myIsDirty = !myLoadedSettings_ || (
+      myCurrentRetention !== myLoadedSettings_.retentionDays ||
+      myCurrentQuota !== myLoadedSettings_.quotaLimitSec
+    );
+
+    mySaveBtn.disabled = !myIsDirty;
+    if (myCancelBtn) {
+      myCancelBtn.style.display = myIsDirty ? 'inline-flex' : 'none';
+    }
+  }
+
+  /**
+   * Revert settings form inputs to last loaded baseline values.
+   */
+  function myCancelSettings() {
+    if (!myLoadedSettings_) return;
+    const myRetentionEl = document.getElementById('myInputRetention');
+    const myQuotaEl = document.getElementById('myInputQuota');
+    if (myRetentionEl) {
+      myRetentionEl.value = myLoadedSettings_.retentionDays;
+      document.getElementById('myRetentionDisplay').innerText = myLoadedSettings_.retentionDays;
+    }
+    if (myQuotaEl) {
+      myQuotaEl.value = myLoadedSettings_.quotaLimitSec;
+    }
+    myCheckSettingsDirtyState_();
+  }
+
+  /**
+   * Save configuration settings to backend.
+   */
+  async function myHandleSaveSettings() {
+    const myRetention = Number(document.getElementById('myInputRetention').value);
+    const myQuota = Number(document.getElementById('myInputQuota').value);
+    const mySaveBtn = document.getElementById('myBtnSaveSettings');
+
+    mySaveBtn.disabled = true;
+    mySaveBtn.innerText = 'Zapisywanie...';
+
+    try {
+      await myCallServer('myApiUpdateSettings', {
+        retentionDays: myRetention,
+        quotaLimitSec: myQuota
+      });
+      myLoadedSettings_ = {
+        retentionDays: myRetention,
+        quotaLimitSec: myQuota
+      };
+      myUpdateTimeWindowInputBounds_();
+      myValidateAndClampInputs_();
+      myCheckSettingsDirtyState_();
+      alert('Ustawienia zapisane pomyślnie.');
+      myLoadDashboard(myGlobalFromIso, myGlobalToIso, myGlobalResolution);
+    } catch (myErr) {
+      alert('Błąd zapisu ustawień: ' + myErr.message);
+    } finally {
+      mySaveBtn.innerText = 'Zapisz ustawienia';
+      myCheckSettingsDirtyState_();
+    }
+  }
+</script>

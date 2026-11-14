@@ -1,5 +1,13 @@
 /**
- * In-memory aggregation engine for processes telemetry.
+ * Server-side in-memory aggregation engine for process telemetry.
+ *
+ * Transforms flat process rows into the dashboard DTO: pre-fills continuous time-series
+ * buckets (up to 1000 points), tracks cumulative daily trigger quota share and peak single
+ * execution durations per project, computes global KPI summary metrics including the last full
+ * calendar day quota usage, and builds per-project/function stats (`avg`, `min`, `max`, `p95`).
+ *
+ * Note: Serves the legacy server-aggregated RPC endpoint; live browser rendering uses the
+ * matching client-side aggregation engine directly on cached raw rows.
  */
 
 /**
