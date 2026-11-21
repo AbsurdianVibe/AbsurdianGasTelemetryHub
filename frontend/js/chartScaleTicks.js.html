@@ -6,8 +6,9 @@
    * - Parses timeline bucket keys to locate exact day, month, and year transitions across the plot.
    * - Draws vertical calendar separator lines and axis tick stubs directly onto the chart canvas,
    *   even when Chart.js skips those boundaries as text ticks (suppressing crowded sub-daily lines).
-   * - Runs a priority-anchor and harmonic time-ladder selection pass that guarantees at least 70px
-   *   between visible labels, falling back to uniform stride spacing on dense windows.
+   * - Runs a priority-anchor and harmonic time-ladder selection pass (matching exact marks or the
+   *   first bucket crossing each harmonic boundary on unaligned dynamic intervals) that guarantees
+   *   at least 70px between visible labels, falling back to uniform stride spacing on dense windows.
    * - Formats X-axis labels in compact delta form so dates and years appear only on transitions.
    */
 
@@ -327,16 +328,18 @@
   }
 
   /**
-   * Test whether bucket parts match a harmonic ladder step.
-   * @param {Object|null} myParts - Parsed bucket parts.
+   * Test whether bucket matches or first crosses a harmonic ladder step.
+   * @param {Object|null} myCurrParts - Current parsed bucket parts.
+   * @param {Object|null} myPrevParts - Previous parsed bucket parts.
    * @param {number} myStep - Minute step or day stride.
    * @param {boolean} myIsDaily - True when resolution is daily.
    * @return {boolean} True when bucket fits on the rung.
    */
-  function myMatchesHarmonicRung_(myParts, myStep, myIsDaily) {
-    if (!myParts) return false;
-    if (myIsDaily) return (myParts.day - 1) % myStep === 0;
-    return myParts.minuteOfDay % myStep === 0;
+  function myMatchesHarmonicRung_(myCurrParts, myPrevParts, myStep, myIsDaily) {
+    if (!myCurrParts) return false;
+    if (myIsDaily) return (myCurrParts.day - 1) % myStep === 0;
+    if (!myPrevParts || myPrevParts.ymd !== myCurrParts.ymd) return myCurrParts.minuteOfDay % myStep === 0;
+    return Math.floor(myCurrParts.minuteOfDay / myStep) > Math.floor(myPrevParts.minuteOfDay / myStep);
   }
 
   /**
@@ -350,7 +353,9 @@
    * @return {boolean} True when bucket should join rung candidates.
    */
   function myIsEligibleRungIndex_(myPartsList, myIdx, myAnchors, myStep, myIsDaily, myXScale) {
-    if (!myMatchesHarmonicRung_(myPartsList[myIdx], myStep, myIsDaily)) return false;
+    if (!myMatchesHarmonicRung_(myPartsList[myIdx], myIdx > 0 ? myPartsList[myIdx - 1] : null, myStep, myIsDaily)) {
+      return false;
+    }
     return myHasPixelClearance_(myIdx, myAnchors, myXScale);
   }
 
